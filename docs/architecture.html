@@ -1,0 +1,400 @@
+import React, { useState } from 'react';
+import { Database, GitBranch, Shield, Wallet, TrendingUp, Users, Layers, Code, Lock, FileText } from 'lucide-react';
+
+const BSVBankArchitecture = () => {
+  const [activeTab, setActiveTab] = useState('overview');
+
+  const architectureComponents = [
+    {
+      id: 'core',
+      name: 'Core Infrastructure',
+      icon: <Layers className="w-6 h-6" />,
+      items: [
+        { lib: 'Galaxy', use: 'Ultra high-performance BSV node', repo: 'murphsicles/Galaxy' },
+        { lib: 'RustBus', use: 'Microservices engine', repo: 'murphsicles/RustBus' },
+        { lib: 'nPrint', use: 'Bitcoin Script VM in Rust', repo: 'murphsicles/nPrint' },
+        { lib: 'Mohrt', use: 'Wallet/payment channel libraries', repo: 'bitcoin-sv/mohrt' }
+      ]
+    },
+    {
+      id: 'wallet',
+      name: 'Wallet & Payments',
+      icon: <Wallet className="w-6 h-6" />,
+      items: [
+        { lib: 'SPV Wallet', use: 'Lightweight wallet infrastructure', repo: 'bitcoin-sv/spv-wallet-web-backend' },
+        { lib: 'HandCash API', use: 'Paymail integration', repo: 'HandCash/external-wallet-demo' },
+        { lib: 'Polynym', use: 'Paymail resolver', repo: 'uptimesv/polynym' },
+        { lib: 'Gateway', use: 'Payment server', repo: 'p2ppsr/gateway' }
+      ]
+    },
+    {
+      id: 'data',
+      name: 'Data & Indexing',
+      icon: <Database className="w-6 h-6" />,
+      items: [
+        { lib: 'Vlite', use: 'Fast vector DB for AI/BSV data', repo: 'sdan/vlite' },
+        { lib: 'Overlay Services', use: 'BSV data layers', source: 'BSV Docs' },
+        { lib: 'OP_RETURN', use: 'On-chain data storage', source: 'Bitcoin Protocol' }
+      ]
+    }
+  ];
+
+  const coreFeatures = [
+    {
+      name: 'Deposit System',
+      description: 'On-chain deposits with SPV verification',
+      tech: 'SPV Wallet + Script validation'
+    },
+    {
+      name: 'Algorithmic Interest',
+      description: 'Utilization-based rates with on-chain proofs',
+      tech: 'Off-chain computation + OP_RETURN commitments'
+    },
+    {
+      name: 'P2P Lending',
+      description: 'Script-enforced loan contracts with collateral',
+      tech: 'Bitcoin Script + nLockTime'
+    },
+    {
+      name: 'Micropayments',
+      description: 'Instant settlement, sub-cent transactions',
+      tech: 'Payment channels + Paymail'
+    },
+    {
+      name: 'Stablecoin Layer',
+      description: 'Tokenized assets pegged to fiat',
+      tech: 'Overlay tokens + collateral pools'
+    }
+  ];
+
+  const teamRoles = [
+    { role: 'Bitcoin Protocol Expert', focus: 'Script design, UTXO management' },
+    { role: 'Rust Backend Engineer', focus: 'Microservices, wallet integration' },
+    { role: 'React Frontend Dev', focus: 'Paymail UX, transaction visualization' },
+    { role: 'Cryptography Auditor', focus: 'Key management, payment security' },
+    { role: 'Compliance Officer', focus: 'FCA, CBCS, FATF, MiCA adherence' },
+    { role: 'Fintech Product Manager', focus: 'Feature prioritization, user onboarding' }
+  ];
+
+  const complianceFramework = [
+    { jurisdiction: 'UK (FCA)', requirements: 'CASP registration, AML/CTF compliance, financial promotions' },
+    { jurisdiction: 'EU (MiCA)', requirements: 'CASP authorization, Travel Rule, reserve requirements' },
+    { jurisdiction: 'Curacao (CBCS)', requirements: 'VASP registration, mandatory reporting' },
+    { jurisdiction: 'Global (FATF)', requirements: 'Travel Rule implementation for transactions >$1000' }
+  ];
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-white to-yellow-50 p-6">
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-white rounded-2xl shadow-xl p-8 mb-8">
+          <div className="flex items-center gap-4 mb-6">
+            <div className="bg-orange-500 p-3 rounded-xl">
+              <GitBranch className="w-8 h-8 text-white" />
+            </div>
+            <div>
+              <h1 className="text-4xl font-bold text-gray-900">BSV Algorithmic Bank</h1>
+              <p className="text-gray-600 mt-1">Open-source banking platform on Bitcoin SV</p>
+            </div>
+          </div>
+
+          <div className="flex gap-2 mb-6 flex-wrap">
+            {['overview', 'architecture', 'features', 'team', 'compliance'].map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-6 py-2 rounded-lg font-medium transition-all ${
+                  activeTab === tab
+                    ? 'bg-orange-500 text-white shadow-lg'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === 'overview' && (
+            <div className="space-y-6">
+              <div className="bg-gradient-to-r from-orange-100 to-yellow-100 p-6 rounded-xl">
+                <h2 className="text-2xl font-bold text-gray-900 mb-4">Project Vision</h2>
+                <p className="text-gray-700 leading-relaxed">
+                  A fully operational, BSV-native algorithmic banking platform that provides deposits, 
+                  interest accrual, P2P lending, and micropayments with complete on-chain transparency 
+                  and cryptographic verification. Built entirely on Bitcoin SV's unbounded scaling capabilities.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-blue-50 p-5 rounded-xl">
+                  <Shield className="w-8 h-8 text-blue-600 mb-3" />
+                  <h3 className="font-bold text-gray-900 mb-2">Security First</h3>
+                  <p className="text-sm text-gray-700">Multi-sig custody, script-enforced contracts, SPV verification</p>
+                </div>
+                <div className="bg-green-50 p-5 rounded-xl">
+                  <TrendingUp className="w-8 h-8 text-green-600 mb-3" />
+                  <h3 className="font-bold text-gray-900 mb-2">Algorithmic Interest</h3>
+                  <p className="text-sm text-gray-700">Transparent, utilization-based rates inspired by Aave/Compound</p>
+                </div>
+                <div className="bg-purple-50 p-5 rounded-xl">
+                  <Users className="w-8 h-8 text-purple-600 mb-3" />
+                  <h3 className="font-bold text-gray-900 mb-2">P2P Native</h3>
+                  <p className="text-sm text-gray-700">Direct lending without intermediaries, enforced by Bitcoin Script</p>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-6 rounded-xl">
+                <h3 className="text-xl font-bold text-gray-900 mb-4">Repository Structure</h3>
+                <pre className="bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto text-sm">
+{`bsv-bank/
+├── core/                    # Rust microservices
+│   ├── deposit-service/     # Deposit handling & SPV verification
+│   ├── interest-engine/     # Rate calculation & distribution
+│   ├── lending-service/     # P2P loan management
+│   └── wallet-manager/      # Custody & key management
+├── contracts/               # Bitcoin Script templates
+│   ├── deposit.script       # Time-locked deposits
+│   ├── loan.script          # Collateralized loans
+│   └── escrow.script        # Multi-sig escrow
+├── frontend/                # React application
+│   ├── components/          # Wallet connection, transaction UI
+│   └── hooks/               # Paymail, SPV wallet integration
+├── sdk/                     # Client libraries
+│   ├── js/                  # JavaScript SDK
+│   └── rust/                # Rust SDK
+├── tests/                   # Comprehensive test suite
+├── docs/                    # Architecture & API documentation
+└── docker-compose.yml       # Deployment configuration`}
+                </pre>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'architecture' && (
+            <div className="space-y-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Technical Architecture</h2>
+              
+              {architectureComponents.map(component => (
+                <div key={component.id} className="border border-gray-200 rounded-xl p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="bg-orange-100 p-2 rounded-lg">
+                      {component.icon}
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900">{component.name}</h3>
+                  </div>
+                  <div className="space-y-3">
+                    {component.items.map((item, idx) => (
+                      <div key={idx} className="bg-gray-50 p-4 rounded-lg">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h4 className="font-bold text-gray-900">{item.lib}</h4>
+                            <p className="text-sm text-gray-600 mt-1">{item.use}</p>
+                          </div>
+                          <code className="text-xs bg-white px-3 py-1 rounded border border-gray-300">
+                            {item.repo || item.source}
+                          </code>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              <div className="bg-blue-50 p-6 rounded-xl">
+                <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <Code className="w-6 h-6" />
+                  On-Chain vs Off-Chain Strategy
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-white p-4 rounded-lg">
+                    <h4 className="font-bold text-green-700 mb-2">On-Chain (OP_RETURN)</h4>
+                    <ul className="text-sm text-gray-700 space-y-1">
+                      <li>• State commitment hashes</li>
+                      <li>• Interest rate snapshots</li>
+                      <li>• Loan contract terms</li>
+                      <li>• Liquidation events</li>
+                    </ul>
+                  </div>
+                  <div className="bg-white p-4 rounded-lg">
+                    <h4 className="font-bold text-blue-700 mb-2">Off-Chain (Overlay)</h4>
+                    <ul className="text-sm text-gray-700 space-y-1">
+                      <li>• Detailed transaction history</li>
+                      <li>• Real-time balance updates</li>
+                      <li>• Interest calculations</li>
+                      <li>• User metadata & analytics</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'features' && (
+            <div className="space-y-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Core Features (MVP)</h2>
+              
+              {coreFeatures.map((feature, idx) => (
+                <div key={idx} className="border-l-4 border-orange-500 bg-gray-50 p-5 rounded-r-lg">
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">{feature.name}</h3>
+                  <p className="text-gray-700 mb-3">{feature.description}</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-gray-500">Tech Stack:</span>
+                    <code className="text-xs bg-white px-3 py-1 rounded border border-gray-300">
+                      {feature.tech}
+                    </code>
+                  </div>
+                </div>
+              ))}
+
+              <div className="bg-yellow-50 p-6 rounded-xl">
+                <h3 className="text-xl font-bold text-gray-900 mb-4">Interest Rate Algorithm</h3>
+                <p className="text-gray-700 mb-4">
+                  Inspired by Aave's utilization-based model, dynamically adjusted based on supply/demand:
+                </p>
+                <div className="bg-white p-4 rounded-lg">
+                  <pre className="text-sm text-gray-800">
+{`Interest Rate = Base Rate + (Utilization × Slope1)
+
+Where:
+- Base Rate: 2% APY (minimum lender yield)
+- Utilization: Total Borrowed / Total Supplied
+- Slope1: 10% (up to 80% utilization)
+- Slope2: 100% (above 80% utilization - discourage over-leverage)
+
+Example: 60% utilization → 2% + (0.6 × 10%) = 8% APY`}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'team' && (
+            <div className="space-y-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Ideal Team Composition</h2>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {teamRoles.map((member, idx) => (
+                  <div key={idx} className="bg-gradient-to-br from-gray-50 to-gray-100 p-5 rounded-xl">
+                    <div className="flex items-center gap-3 mb-3">
+                      <Users className="w-6 h-6 text-orange-600" />
+                      <h3 className="font-bold text-gray-900">{member.role}</h3>
+                    </div>
+                    <p className="text-sm text-gray-700">{member.focus}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="bg-orange-50 p-6 rounded-xl">
+                <h3 className="text-xl font-bold text-gray-900 mb-4">Development Phases</h3>
+                <div className="space-y-3">
+                  <div className="bg-white p-4 rounded-lg">
+                    <h4 className="font-bold text-orange-700 mb-2">Phase 1: Core Infrastructure (Weeks 1-4)</h4>
+                    <p className="text-sm text-gray-700">Integrate Galaxy node, SPV wallet, basic deposit/withdrawal scripts</p>
+                  </div>
+                  <div className="bg-white p-4 rounded-lg">
+                    <h4 className="font-bold text-orange-700 mb-2">Phase 2: Interest Engine (Weeks 5-8)</h4>
+                    <p className="text-sm text-gray-700">Implement rate calculation, on-chain commitments, automated payouts</p>
+                  </div>
+                  <div className="bg-white p-4 rounded-lg">
+                    <h4 className="font-bold text-orange-700 mb-2">Phase 3: P2P Lending (Weeks 9-12)</h4>
+                    <p className="text-sm text-gray-700">Build loan contracts, collateral management, liquidation engine</p>
+                  </div>
+                  <div className="bg-white p-4 rounded-lg">
+                    <h4 className="font-bold text-orange-700 mb-2">Phase 4: Frontend & Testing (Weeks 13-16)</h4>
+                    <p className="text-sm text-gray-700">React app, Paymail integration, comprehensive security audits</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'compliance' && (
+            <div className="space-y-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Regulatory Compliance Framework</h2>
+              
+              {complianceFramework.map((framework, idx) => (
+                <div key={idx} className="border border-gray-200 rounded-xl p-6">
+                  <div className="flex items-center gap-3 mb-3">
+                    <Lock className="w-6 h-6 text-red-600" />
+                    <h3 className="text-lg font-bold text-gray-900">{framework.jurisdiction}</h3>
+                  </div>
+                  <p className="text-gray-700 bg-red-50 p-4 rounded-lg">{framework.requirements}</p>
+                </div>
+              ))}
+
+              <div className="bg-blue-50 p-6 rounded-xl">
+                <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <FileText className="w-6 h-6" />
+                  Required Compliance Measures
+                </h3>
+                <ul className="space-y-2 text-gray-700">
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-600 font-bold">•</span>
+                    <span><strong>KYC/AML:</strong> Integrate Sumsub or similar for identity verification on deposits &gt; €1000</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-600 font-bold">•</span>
+                    <span><strong>Travel Rule:</strong> Capture beneficiary info for transfers exceeding $1000 USD equivalent</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-600 font-bold">•</span>
+                    <span><strong>Custodial Licensing:</strong> Apply for VASP registration in target jurisdictions (UK FCA, Curacao CBCS)</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-600 font-bold">•</span>
+                    <span><strong>Audit Trail:</strong> Maintain immutable on-chain records accessible to regulators</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-600 font-bold">•</span>
+                    <span><strong>Reserve Proof:</strong> Publish cryptographic proof of reserves monthly via OP_RETURN</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="bg-yellow-50 p-6 rounded-xl">
+                <h3 className="text-lg font-bold text-gray-900 mb-3">⚠️ Critical Legal Notice</h3>
+                <p className="text-sm text-gray-700 leading-relaxed">
+                  This architecture does NOT constitute legal or financial advice. Operating a custodial 
+                  crypto banking platform requires proper licensing, ongoing compliance monitoring, and 
+                  consultation with qualified legal counsel in each operational jurisdiction. Failure to 
+                  comply with VASP regulations can result in severe penalties including criminal prosecution.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-xl p-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Next Steps</h2>
+          <div className="space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="bg-orange-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold flex-shrink-0">1</div>
+              <p className="text-gray-700">Clone foundational repos (Galaxy, RustBus, SPV Wallet, nPrint)</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="bg-orange-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold flex-shrink-0">2</div>
+              <p className="text-gray-700">Implement deposit script with SPV verification and time-locks</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="bg-orange-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold flex-shrink-0">3</div>
+              <p className="text-gray-700">Build interest engine microservice with OP_RETURN commitment layer</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="bg-orange-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold flex-shrink-0">4</div>
+              <p className="text-gray-700">Create React frontend with HandCash/Paymail wallet connection</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="bg-orange-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold flex-shrink-0">5</div>
+              <p className="text-gray-700">Comprehensive security audit by OpenZeppelin or equivalent</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="bg-orange-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold flex-shrink-0">6</div>
+              <p className="text-gray-700">Legal review and VASP registration in pilot jurisdiction (Curacao recommended)</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default BSVBankArchitecture;

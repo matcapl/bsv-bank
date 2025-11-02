@@ -1,0 +1,61 @@
+import React, { useState } from 'react';
+
+function App() {
+  const [connected, setConnected] = useState(false);
+  const [balance, setBalance] = useState(null);
+  const [paymail] = useState('test@handcash.io');
+
+  const connectWallet = async () => {
+    setConnected(true);
+    const res = await fetch(`http://localhost:8080/balance/${paymail}`);
+    const data = await res.json();
+    setBalance(data);
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#f9fafb', padding: '2rem' }}>
+      <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+        <div style={{ background: 'white', borderRadius: '1rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', padding: '2rem', marginBottom: '2rem' }}>
+          <h1 style={{ fontSize: '2rem', fontWeight: 'bold' }}>BSV Bank</h1>
+          <p style={{ color: '#666' }}>Algorithmic Banking on Bitcoin SV</p>
+          {!connected && (
+            <button 
+              onClick={connectWallet}
+              style={{ marginTop: '1rem', background: '#f97316', color: 'white', padding: '0.75rem 1.5rem', borderRadius: '0.5rem', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+            >
+              Connect Wallet
+            </button>
+          )}
+        </div>
+
+        {connected && balance && (
+          <div style={{ background: 'white', borderRadius: '1rem', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', padding: '2rem' }}>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1rem' }}>Balance</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+              <div style={{ background: '#3b82f6', color: 'white', padding: '1.5rem', borderRadius: '0.5rem' }}>
+                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>Balance</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', marginTop: '0.5rem' }}>
+                  {(balance.balance_satoshis / 100000000).toFixed(8)} BSV
+                </div>
+              </div>
+              <div style={{ background: '#10b981', color: 'white', padding: '1.5rem', borderRadius: '0.5rem' }}>
+                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>Interest</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', marginTop: '0.5rem' }}>
+                  {(balance.accrued_interest_satoshis / 100000000).toFixed(8)} BSV
+                </div>
+              </div>
+              <div style={{ background: '#8b5cf6', color: 'white', padding: '1.5rem', borderRadius: '0.5rem' }}>
+                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>APY</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', marginTop: '0.5rem' }}>
+                  {balance.current_apy.toFixed(2)}%
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;

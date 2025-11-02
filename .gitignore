@@ -1,0 +1,9 @@
+target/
+node_modules/
+.env
+*.log
+.DS_Store
+
+commands.txt
+nvm-install.txt
+more-logs.txt
