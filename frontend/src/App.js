@@ -1,448 +1,319 @@
 import React, { useState, useEffect } from 'react';
-import { Wallet, TrendingUp, Send, ArrowDownToLine, Shield, Clock, AlertCircle } from 'lucide-react';
+import { Wallet, TrendingUp, ArrowDownToLine } from 'lucide-react';
 
-const BSVBankApp = () => {
+function App() {
   const [connected, setConnected] = useState(false);
   const [paymail, setPaymail] = useState('');
   const [balance, setBalance] = useState(null);
-  const [activeTab, setActiveTab] = useState('deposit');
   const [depositAmount, setDepositAmount] = useState('');
   const [lockDays, setLockDays] = useState(30);
-  const [withdrawalAddress, setWithdrawalAddress] = useState('');
-  const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
 
-  // Connect to HandCash wallet
   const connectWallet = async () => {
-    setLoading(true);
-    try {
-      // In production: integrate HandCash Connect SDK
-      // const handCash = new HandCashConnect({ appId: 'your-app-id' });
-      // const account = await handCash.getAccount();
-      
-      // Simulated connection
-      setTimeout(() => {
-        const mockPaymail = 'user@handcash.io';
-        setPaymail(mockPaymail);
-        setConnected(true);
-        fetchBalance(mockPaymail);
-        setLoading(false);
-      }, 1000);
-    } catch (error) {
-      console.error('Wallet connection failed:', error);
-      setLoading(false);
-    }
+    const userPaymail = prompt('Enter your Paymail (e.g., yourname@handcash.io):');
+    if (!userPaymail) return;
+    
+    setPaymail(userPaymail);
+    setConnected(true);
+    setMessage('✅ Connected successfully!');
+    await fetchBalance(userPaymail);
   };
 
-  // Fetch user balance from deposit service
-  const fetchBalance = async (userPaymail) => {
+  const fetchBalance = async (pm) => {
     try {
-      const response = await fetch(`http://localhost:8080/balance/${encodeURIComponent(userPaymail)}`);
-      if (response.ok) {
-        const data = await response.json();
-        setBalance(data);
-      }
+      const res = await fetch(`http://localhost:8080/balance/${encodeURIComponent(pm)}`);
+      const data = await res.json();
+      setBalance(data);
     } catch (error) {
       console.error('Failed to fetch balance:', error);
-      // Mock data for demo
-      setBalance({
-        balance_satoshis: 1500000,
-        accrued_interest_satoshis: 45000,
-        total_available_satoshis: 1545000,
-        current_apy: 8.5,
-        active_deposits: 3
-      });
+      setMessage('❌ Failed to fetch balance');
     }
   };
 
-  // Create deposit
   const handleDeposit = async () => {
     if (!depositAmount || parseFloat(depositAmount) <= 0) {
-      alert('Please enter a valid deposit amount');
+      setMessage('❌ Please enter a valid amount');
       return;
     }
 
     setLoading(true);
+    setMessage('Creating deposit...');
+
     try {
-      const satoshis = Math.floor(parseFloat(depositAmount) * 100000000);
-      
-      // In production: create real BSV transaction via HandCash
-      // const payment = await handCashAccount.pay({
-      //   to: 'bank-deposit-address',
-      //   amount: depositAmount,
-      //   currencyCode: 'BSV'
-      // });
-      
-      // Mock transaction ID
       const mockTxid = Array(64).fill(0).map(() => 
         Math.floor(Math.random() * 16).toString(16)
       ).join('');
-      
+
       const response = await fetch('http://localhost:8080/deposits', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_paymail: paymail,
-          amount_satoshis: satoshis,
+          amount_satoshis: Math.floor(parseFloat(depositAmount) * 100000000),
           txid: mockTxid,
-          lock_duration_days: lockDays > 0 ? lockDays : null
-        })
+          lock_duration_days: lockDays > 0 ? lockDays : null,
+        }),
       });
 
       if (response.ok) {
         const result = await response.json();
-        alert(`Deposit created! ID: ${result.deposit_id}\nStatus: ${result.status}`);
+        setMessage(`✅ Deposit created! ID: ${result.deposit_id.substring(0, 8)}...`);
         setDepositAmount('');
-        fetchBalance(paymail);
-        
-        // Add to transaction history
-        setTransactions(prev => [{
-          type: 'deposit',
-          amount: satoshis,
-          status: result.status,
-          timestamp: new Date(),
-          id: result.deposit_id
-        }, ...prev]);
-      }
-    } catch (error) {
-      console.error('Deposit failed:', error);
-      alert('Deposit failed. Please try again.');
-    }
-    setLoading(false);
-  };
-
-  // Initiate withdrawal
-  const handleWithdraw = async (depositId) => {
-    if (!withdrawalAddress) {
-      alert('Please enter a withdrawal address');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      // Mock signature (in production: sign with user's private key)
-      const mockSignature = Array(128).fill(0).map(() => 
-        Math.floor(Math.random() * 16).toString(16)
-      ).join('');
-
-      const response = await fetch('http://localhost:8080/withdrawals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deposit_id: depositId,
-          destination_address: withdrawalAddress,
-          signature: mockSignature
-        })
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        alert(`Withdrawal successful!\nTXID: ${result.withdrawal_txid}`);
-        setWithdrawalAddress('');
-        fetchBalance(paymail);
+        await fetchBalance(paymail);
       } else {
-        const error = await response.json();
-        alert(`Withdrawal failed: ${error.error}`);
+        throw new Error('Failed to create deposit');
       }
     } catch (error) {
-      console.error('Withdrawal failed:', error);
-      alert('Withdrawal failed. Please try again.');
+      console.error('Deposit error:', error);
+      setMessage(`❌ Deposit failed: ${error.message}`);
     }
     setLoading(false);
   };
 
-  const formatBSV = (satoshis) => {
-    return (satoshis / 100000000).toFixed(8);
-  };
-
-  const formatUSD = (satoshis, bsvPrice = 50) => {
-    return ((satoshis / 100000000) * bsvPrice).toFixed(2);
-  };
+  const formatBSV = (satoshis) => (satoshis / 100000000).toFixed(8);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50 p-4">
-      <div className="max-w-6xl mx-auto">
+    <div style={{ 
+      minHeight: '100vh', 
+      background: 'linear-gradient(to bottom right, #fff7ed, #fef3c7)', 
+      padding: '2rem',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    }}>
+      <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+        
         {/* Header */}
-        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              <div className="bg-gradient-to-br from-orange-500 to-red-500 p-3 rounded-xl">
-                <Wallet className="w-8 h-8 text-white" />
+        <div style={{ 
+          background: 'white', 
+          borderRadius: '1rem', 
+          boxShadow: '0 10px 25px rgba(0,0,0,0.1)', 
+          padding: '2rem', 
+          marginBottom: '2rem' 
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <div style={{ background: 'linear-gradient(135deg, #f97316, #dc2626)', padding: '1rem', borderRadius: '1rem' }}>
+                <Wallet style={{ width: '2rem', height: '2rem', color: 'white' }} />
               </div>
               <div>
-                <h1 className="text-3xl font-bold text-gray-900">BSV Bank</h1>
-                <p className="text-gray-600">Algorithmic Banking on Bitcoin SV</p>
+                <h1 style={{ fontSize: '2rem', fontWeight: 'bold', margin: 0 }}>BSV Bank</h1>
+                <p style={{ color: '#666', margin: 0 }}>Algorithmic Banking Platform</p>
               </div>
             </div>
             
             {!connected ? (
-              <button
-                onClick={connectWallet}
-                disabled={loading}
-                className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-lg disabled:opacity-50"
+              <button 
+                onClick={connectWallet} 
+                style={{ 
+                  background: '#f97316', 
+                  color: 'white', 
+                  padding: '0.75rem 1.5rem', 
+                  borderRadius: '0.75rem', 
+                  border: 'none', 
+                  cursor: 'pointer', 
+                  fontWeight: 'bold',
+                  fontSize: '1rem'
+                }}
               >
-                {loading ? 'Connecting...' : 'Connect Wallet'}
+                Connect Wallet
               </button>
             ) : (
-              <div className="text-right">
-                <div className="text-sm text-gray-600 mb-1">Connected</div>
-                <div className="font-mono text-sm bg-gray-100 px-3 py-1 rounded-lg">
-                  {paymail}
-                </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: '0.875rem', color: '#666' }}>Connected</div>
+                <div style={{ fontWeight: 'bold', fontFamily: 'monospace', fontSize: '0.875rem' }}>{paymail}</div>
               </div>
             )}
           </div>
+
+          {message && (
+            <div style={{ 
+              marginTop: '1rem', 
+              padding: '1rem', 
+              borderRadius: '0.5rem', 
+              background: message.includes('❌') ? '#fee2e2' : '#d1fae5', 
+              color: message.includes('❌') ? '#991b1b' : '#065f46',
+              fontSize: '0.875rem'
+            }}>
+              {message}
+            </div>
+          )}
         </div>
 
         {connected && balance && (
           <>
-            {/* Balance Overview */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-6 text-white">
-                <div className="text-sm opacity-90 mb-2">Total Balance</div>
-                <div className="text-2xl font-bold mb-1">
+            {/* Balances */}
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', 
+              gap: '1rem', 
+              marginBottom: '2rem' 
+            }}>
+              <div style={{ 
+                background: 'linear-gradient(135deg, #10b981, #059669)', 
+                color: 'white', 
+                padding: '1.5rem', 
+                borderRadius: '1rem' 
+              }}>
+                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>Balance</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: '0.5rem 0' }}>
                   {formatBSV(balance.balance_satoshis)} BSV
                 </div>
-                <div className="text-sm opacity-75">
-                  ≈ ${formatUSD(balance.balance_satoshis)} USD
+                <div style={{ fontSize: '0.75rem', opacity: 0.75 }}>
+                  {balance.active_deposits} active deposits
                 </div>
               </div>
-
-              <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-xl p-6 text-white">
-                <div className="text-sm opacity-90 mb-2">Accrued Interest</div>
-                <div className="text-2xl font-bold mb-1">
+              
+              <div style={{ 
+                background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)', 
+                color: 'white', 
+                padding: '1.5rem', 
+                borderRadius: '1rem' 
+              }}>
+                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>Accrued Interest</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: '0.5rem 0' }}>
                   {formatBSV(balance.accrued_interest_satoshis)} BSV
                 </div>
-                <div className="text-sm opacity-75">
-                  ≈ ${formatUSD(balance.accrued_interest_satoshis)} USD
-                </div>
               </div>
 
-              <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl p-6 text-white">
-                <div className="text-sm opacity-90 mb-2">Current APY</div>
-                <div className="text-2xl font-bold mb-1">
+              <div style={{ 
+                background: 'linear-gradient(135deg, #f59e0b, #d97706)', 
+                color: 'white', 
+                padding: '1.5rem', 
+                borderRadius: '1rem' 
+              }}>
+                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>Current APY</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: '0.5rem 0' }}>
                   {balance.current_apy.toFixed(2)}%
                 </div>
-                <div className="text-sm opacity-75">
-                  Updated live
-                </div>
-              </div>
-
-              <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-xl p-6 text-white">
-                <div className="text-sm opacity-90 mb-2">Active Deposits</div>
-                <div className="text-2xl font-bold mb-1">
-                  {balance.active_deposits}
-                </div>
-                <div className="text-sm opacity-75">
-                  Earning interest
-                </div>
               </div>
             </div>
 
-            {/* Main Actions */}
-            <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
-              <div className="flex gap-2 mb-6 border-b">
-                {['deposit', 'withdraw', 'lend'].map(tab => (
-                  <button
-                    key={tab}
-                    onClick={() => setActiveTab(tab)}
-                    className={`px-6 py-3 font-medium transition-all ${
-                      activeTab === tab
-                        ? 'border-b-2 border-orange-500 text-orange-600'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                  </button>
-                ))}
+            {/* Deposit Form */}
+            <div style={{ 
+              background: 'white', 
+              borderRadius: '1rem', 
+              boxShadow: '0 10px 25px rgba(0,0,0,0.1)', 
+              padding: '2rem' 
+            }}>
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1.5rem', marginTop: 0 }}>
+                Create Deposit
+              </h2>
+              
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label style={{ 
+                  display: 'block', 
+                  fontSize: '0.875rem', 
+                  fontWeight: '500', 
+                  marginBottom: '0.5rem' 
+                }}>
+                  Amount (BSV)
+                </label>
+                <input 
+                  type="number" 
+                  step="0.00000001" 
+                  value={depositAmount} 
+                  onChange={(e) => setDepositAmount(e.target.value)} 
+                  style={{ 
+                    width: '100%', 
+                    padding: '0.75rem', 
+                    border: '2px solid #e5e7eb', 
+                    borderRadius: '0.5rem', 
+                    fontSize: '1rem' 
+                  }} 
+                  placeholder="0.001" 
+                />
               </div>
 
-              {activeTab === 'deposit' && (
-                <div className="space-y-4">
-                  <div className="bg-blue-50 p-4 rounded-xl flex items-start gap-3">
-                    <Shield className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-                    <div className="text-sm text-blue-900">
-                      Deposits are secured by Bitcoin Script with SPV verification. 
-                      Earn algorithmic interest based on platform utilization.
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Deposit Amount (BSV)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.00000001"
-                      value={depositAmount}
-                      onChange={(e) => setDepositAmount(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                      placeholder="0.01"
-                    />
-                    {depositAmount && (
-                      <div className="text-sm text-gray-600 mt-1">
-                        ≈ ${formatUSD(parseFloat(depositAmount) * 100000000)} USD
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Lock Period (Optional)
-                    </label>
-                    <div className="flex gap-2">
-                      {[0, 7, 30, 90, 365].map(days => (
-                        <button
-                          key={days}
-                          onClick={() => setLockDays(days)}
-                          className={`flex-1 px-4 py-2 rounded-lg font-medium transition-all ${
-                            lockDays === days
-                              ? 'bg-orange-500 text-white'
-                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
-                        >
-                          {days === 0 ? 'None' : `${days}d`}
-                        </button>
-                      ))}
-                    </div>
-                    {lockDays > 0 && (
-                      <div className="flex items-center gap-2 mt-2 text-sm text-green-600">
-                        <TrendingUp className="w-4 h-4" />
-                        Earn +{(lockDays / 365 * 2).toFixed(1)}% bonus APY for locking
-                      </div>
-                    )}
-                  </div>
-
-                  <button
-                    onClick={handleDeposit}
-                    disabled={loading || !depositAmount}
-                    className="w-full bg-orange-500 hover:bg-orange-600 text-white py-4 rounded-xl font-bold transition-all shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    <ArrowDownToLine className="w-5 h-5" />
-                    {loading ? 'Processing...' : 'Create Deposit'}
-                  </button>
-                </div>
-              )}
-
-              {activeTab === 'withdraw' && (
-                <div className="space-y-4">
-                  <div className="bg-yellow-50 p-4 rounded-xl flex items-start gap-3">
-                    <Clock className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
-                    <div className="text-sm text-yellow-900">
-                      Withdrawals are instant for unlocked deposits. 
-                      Locked deposits must wait until the lock period expires.
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Withdrawal Address
-                    </label>
-                    <input
-                      type="text"
-                      value={withdrawalAddress}
-                      onChange={(e) => setWithdrawalAddress(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent font-mono text-sm"
-                      placeholder="1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-                    />
-                  </div>
-
-                  <div className="border border-gray-200 rounded-xl p-4">
-                    <h3 className="font-bold text-gray-900 mb-3">Available Deposits</h3>
-                    {balance.active_deposits > 0 ? (
-                      <div className="space-y-2">
-                        {[...Array(balance.active_deposits)].map((_, idx) => (
-                          <div key={idx} className="flex justify-between items-center bg-gray-50 p-3 rounded-lg">
-                            <div>
-                              <div className="font-mono text-sm">DEP_mock_{idx + 1}</div>
-                              <div className="text-sm text-gray-600">
-                                {formatBSV(500000)} BSV · Unlocked
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => handleWithdraw(`DEP_mock_${idx + 1}`)}
-                              disabled={loading}
-                              className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-medium transition-all disabled:opacity-50"
-                            >
-                              Withdraw
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-center text-gray-500 py-4">
-                        No deposits available for withdrawal
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {activeTab === 'lend' && (
-                <div className="space-y-4">
-                  <div className="bg-purple-50 p-4 rounded-xl flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-purple-600 flex-shrink-0 mt-0.5" />
-                    <div className="text-sm text-purple-900">
-                      P2P lending is enforced by Bitcoin Script. 
-                      Loans are over-collateralized and automatically liquidated if needed.
-                    </div>
-                  </div>
-
-                  <div className="text-center py-8">
-                    <Send className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                    <h3 className="text-xl font-bold text-gray-900 mb-2">Coming Soon</h3>
-                    <p className="text-gray-600">
-                      P2P lending marketplace launching in Phase 3
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Transaction History */}
-            {transactions.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-xl p-6">
-                <h2 className="text-xl font-bold text-gray-900 mb-4">Recent Transactions</h2>
-                <div className="space-y-2">
-                  {transactions.map((tx, idx) => (
-                    <div key={idx} className="flex justify-between items-center bg-gray-50 p-4 rounded-xl">
-                      <div>
-                        <div className="font-medium text-gray-900 capitalize">{tx.type}</div>
-                        <div className="text-sm text-gray-600">
-                          {tx.timestamp.toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-bold text-gray-900">
-                          {formatBSV(tx.amount)} BSV
-                        </div>
-                        <div className={`text-sm ${
-                          tx.status === 'Confirmed' ? 'text-green-600' : 'text-yellow-600'
-                        }`}>
-                          {tx.status}
-                        </div>
-                      </div>
-                    </div>
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label style={{ 
+                  display: 'block', 
+                  fontSize: '0.875rem', 
+                  fontWeight: '500', 
+                  marginBottom: '0.5rem' 
+                }}>
+                  Lock Period (Optional)
+                </label>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {[0, 7, 30, 90, 365].map(days => (
+                    <button 
+                      key={days} 
+                      onClick={() => setLockDays(days)} 
+                      style={{ 
+                        flex: '1 1 auto',
+                        minWidth: '60px',
+                        padding: '0.75rem', 
+                        borderRadius: '0.5rem', 
+                        border: 'none', 
+                        cursor: 'pointer', 
+                        fontWeight: '500', 
+                        background: lockDays === days ? '#f97316' : '#f3f4f6', 
+                        color: lockDays === days ? 'white' : '#374151' 
+                      }}
+                    >
+                      {days === 0 ? 'None' : `${days}d`}
+                    </button>
                   ))}
                 </div>
+                {lockDays > 0 && (
+                  <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: '0.5rem' }}>
+                    ✓ Earn +{(lockDays / 365 * 2).toFixed(1)}% bonus APY
+                  </div>
+                )}
               </div>
-            )}
+
+              <button 
+                onClick={handleDeposit} 
+                disabled={loading || !depositAmount} 
+                style={{ 
+                  width: '100%', 
+                  background: loading || !depositAmount ? '#9ca3af' : 'linear-gradient(135deg, #f97316, #dc2626)', 
+                  color: 'white', 
+                  padding: '1rem', 
+                  borderRadius: '0.75rem', 
+                  border: 'none', 
+                  cursor: loading || !depositAmount ? 'not-allowed' : 'pointer', 
+                  fontWeight: 'bold', 
+                  fontSize: '1rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.5rem'
+                }}
+              >
+                <ArrowDownToLine style={{ width: '1.25rem', height: '1.25rem' }} />
+                {loading ? 'Processing...' : 'Create Deposit'}
+              </button>
+            </div>
           </>
         )}
 
         {!connected && (
-          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
-            <Wallet className="w-20 h-20 text-gray-400 mx-auto mb-6" />
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">
-              Connect Your Wallet to Get Started
+          <div style={{ 
+            background: 'white', 
+            borderRadius: '1rem', 
+            boxShadow: '0 10px 25px rgba(0,0,0,0.1)', 
+            padding: '3rem', 
+            textAlign: 'center' 
+          }}>
+            <Wallet style={{ width: '5rem', height: '5rem', color: '#d1d5db', margin: '0 auto 1.5rem' }} />
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1rem' }}>
+              Connect Your Wallet
             </h2>
-            <p className="text-gray-600 mb-6 max-w-md mx-auto">
-              Connect with HandCash, Money Button, or any Paymail-compatible wallet 
-              to start earning interest on your BSV deposits.
+            <p style={{ color: '#666', marginBottom: '2rem', maxWidth: '400px', margin: '0 auto 2rem' }}>
+              Enter your Paymail to start earning algorithmic interest on your BSV deposits
             </p>
-            <button
-              onClick={connectWallet}
-              className="bg-orange-500 hover:bg-orange-600 text-white px-8 py-4 rounded-xl font-bold transition-all shadow-lg"
+            <button 
+              onClick={connectWallet} 
+              style={{ 
+                background: 'linear-gradient(135deg, #f97316, #dc2626)', 
+                color: 'white', 
+                padding: '1rem 2rem', 
+                borderRadius: '0.75rem', 
+                border: 'none', 
+                cursor: 'pointer', 
+                fontWeight: 'bold', 
+                fontSize: '1rem' 
+              }}
             >
               Connect Wallet
             </button>
@@ -451,6 +322,6 @@ const BSVBankApp = () => {
       </div>
     </div>
   );
-};
+}
 
-export default BSVBankApp;
+export default App;
