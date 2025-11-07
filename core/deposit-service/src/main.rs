@@ -1,6 +1,7 @@
 mod database;
 mod auth;
 mod node_integration;
+mod validation;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,17 @@ async fn create_deposit(
     pool: web::Data<PgPool>,
     request: web::Json<DepositRequest>,
 ) -> impl Responder {
+    // Validate inputs
+    if let Err(e) = validation::validate_paymail(&request.user_paymail) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
+    }
+    if let Err(e) = validation::validate_txid(&request.txid) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
+    }
+    if let Err(e) = validation::validate_amount(request.amount_satoshis) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
+    }
+
     match node_integration::verify_transaction_real(&request.txid).await {
         Ok((verified, confirmations)) => {
             if !verified {
@@ -127,6 +139,11 @@ async fn get_user_balance(
     pool: web::Data<PgPool>,
     paymail: web::Path<String>,
 ) -> impl Responder {
+    // Validate paymail
+    if let Err(e) = validation::validate_paymail(&paymail) {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
+    }
+
     let result = sqlx::query!(
         r#"
         SELECT 

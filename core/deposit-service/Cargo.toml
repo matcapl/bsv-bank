@@ -16,3 +16,4 @@ bsv-node = { path = "../bsv-node" }
 reqwest = { version = "0.11", features = ["json"] }
 jsonwebtoken = "9"
 sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "chrono", "uuid"] }
+regex = "1"

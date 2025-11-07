@@ -493,6 +493,7 @@ dependencies = [
  "chrono",
  "hex",
  "jsonwebtoken",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
