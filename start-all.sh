@@ -27,6 +27,17 @@ else
     cd ../..
 fi
 
+if lsof -Pi :8082 -sTCP:LISTEN -t >/dev/null ; then
+    echo "⚠️  Lending service already running on port 8082"
+else
+    echo "Starting lending-service..."
+    cd core/lending-service
+    cargo run > ../../logs/loans.log 2>&1 &
+    LENDING_PID=$!
+    echo "  ✓ Lending service (PID: $LENDING_PID)"
+    cd ../..
+fi
+
 sleep 3
 
 echo ""
@@ -35,12 +46,15 @@ echo ""
 echo "Services:"
 echo "  Deposit Service:  http://localhost:8080"
 echo "  Interest Engine:  http://localhost:8081"
+echo "  Lending Service:  http://localhost:8082"
 echo "  Frontend:         http://localhost:3000 (run 'cd frontend && npm start')"
 echo ""
 echo "Quick tests:"
 echo "  curl http://localhost:8080/health"
 echo "  curl http://localhost:8081/rates/current"
+echo "  curl http://localhost:8082/loans/available"
 echo ""
 echo "Logs:"
 echo "  tail -f logs/deposit.log"
 echo "  tail -f logs/interest.log"
+echo "  tail -f logs/loans.log"

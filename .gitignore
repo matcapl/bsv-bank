@@ -12,3 +12,10 @@ commands.txt
 nvm-install.txt
 more-logs.txt
 desirables.txt
+
+junk/
+
+venv/
+.venv
+env/
+
