@@ -1,35 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import './LoanHistory.css';
 
-interface Loan {
-  id: string;
-  borrower_paymail: string;
-  lender_paymail: string | null;
-  amount_satoshis: number;
-  collateral_satoshis: number;
-  interest_rate: number;
-  duration_days: number;
-  status: 'Pending' | 'Active' | 'Repaid' | 'Liquidated';
-  created_at: string;
-  funded_at: string | null;
-  repaid_at: string | null;
-  liquidated_at: string | null;
-}
-
-interface LoanHistoryProps {
-  userPaymail: string;
-  apiBaseUrl?: string;
-}
-
-const LoanHistory: React.FC<LoanHistoryProps> = ({ 
-  userPaymail, 
-  apiBaseUrl = 'http://localhost:8082' 
-}) => {
-  const [loans, setLoans] = useState<Loan[]>([]);
+const LoanHistory = ({ userPaymail, apiBaseUrl = 'http://localhost:8082' }) => {
+  const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'all' | 'borrowed' | 'lent'>('all');
-  const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null);
+  const [error, setError] = useState(null);
+  const [viewMode, setViewMode] = useState('all');
+  const [selectedLoan, setSelectedLoan] = useState(null);
 
   useEffect(() => {
     fetchLoans();
@@ -72,7 +49,7 @@ const LoanHistory: React.FC<LoanHistoryProps> = ({
     return true;
   });
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status) => {
     switch (status) {
       case 'Pending': return '#f59e0b';
       case 'Active': return '#3b82f6';
@@ -82,7 +59,7 @@ const LoanHistory: React.FC<LoanHistoryProps> = ({
     }
   };
 
-  const formatDate = (dateString: string | null) => {
+  const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
     return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -93,20 +70,20 @@ const LoanHistory: React.FC<LoanHistoryProps> = ({
     });
   };
 
-  const formatSatoshis = (amount: number) => {
+  const formatSatoshis = (amount) => {
     return amount.toLocaleString() + ' sats';
   };
 
-  const calculateTotalDue = (loan: Loan) => {
+  const calculateTotalDue = (loan) => {
     const interest = Math.floor(loan.amount_satoshis * loan.interest_rate);
     return loan.amount_satoshis + interest;
   };
 
-  const calculateCollateralRatio = (loan: Loan) => {
+  const calculateCollateralRatio = (loan) => {
     return ((loan.collateral_satoshis / loan.amount_satoshis) * 100).toFixed(0);
   };
 
-  const getRole = (loan: Loan) => {
+  const getRole = (loan) => {
     if (loan.borrower_paymail === userPaymail) return 'Borrower';
     if (loan.lender_paymail === userPaymail) return 'Lender';
     return 'Unknown';

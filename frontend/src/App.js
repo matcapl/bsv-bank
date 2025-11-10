@@ -1,22 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Wallet, TrendingUp, ArrowDownToLine, Coins, AlertCircle } from 'lucide-react';
+import LoanHistory from './components/LoanHistory';
 
 function App() {
   const [connected, setConnected] = useState(false);
   const [paymail, setPaymail] = useState('');
   const [balance, setBalance] = useState(null);
   const [depositAmount, setDepositAmount] = useState('');
-  const [lockDays, setLockDays] = useState(30);
+  const [lockDays, setLockDays] = useState(0);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [activeTab, setActiveTab] = useState('deposit');
-  
-  // Lending state
   const [loanAmount, setLoanAmount] = useState('');
   const [collateral, setCollateral] = useState('');
   const [loanDuration, setLoanDuration] = useState(30);
-  const [interestRate, setInterestRate] = useState(1000); // 10% in bps
+  const [interestRate, setInterestRate] = useState(1000);
   const [availableLoans, setAvailableLoans] = useState([]);
+  const [currentView, setCurrentView] = useState('dashboard');
 
   const connectWallet = async () => {
     const userPaymail = prompt('Enter your Paymail (e.g., yourname@handcash.io):');
@@ -24,46 +24,44 @@ function App() {
       setMessage('❌ Invalid paymail format');
       return;
     }
-    
     setPaymail(userPaymail);
     setLoading(true);
-    
     try {
       await fetchBalance(userPaymail);
       setConnected(true);
       setMessage('✅ Connected successfully!');
     } catch (error) {
-      setMessage('❌ Connection failed: ' + error.message);
+      setMessage('❌ Connection failed');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const fetchBalance = async (pm) => {
+  const fetchBalance = async (userPaymail) => {
     try {
-      const res = await fetch(`http://localhost:8080/balance/${encodeURIComponent(pm)}`);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = await res.json();
+      const response = await fetch(`http://localhost:8080/balance/${userPaymail}`);
+      const data = await response.json();
       setBalance(data);
     } catch (error) {
       console.error('Failed to fetch balance:', error);
-      // Create empty balance for new users
-      setBalance({
-        balance_satoshis: 0,
-        accrued_interest_satoshis: 0,
-        total_available_satoshis: 0,
-        current_apy: 7.0,
-        active_deposits: 0
-      });
+      setBalance({ balance_satoshis: 0, accrued_interest_satoshis: 0, total_available_satoshis: 0, current_apy: 7.0, active_deposits: 0 });
     }
   };
 
   const fetchAvailableLoans = async () => {
     try {
-      const res = await fetch('http://localhost:8082/loans/available');
-      const data = await res.json();
-      setAvailableLoans(data);
+      const response = await fetch('http://localhost:8082/loans/available');
+      const data = await response.json();
+      const formatted = data.map(loan => ({
+        loan_id: loan.id,
+        borrower: loan.borrower_paymail,
+        amount: loan.principal_satoshis,
+        collateral: loan.collateral_satoshis,
+        collateral_ratio: loan.collateral_satoshis / loan.principal_satoshis,
+        interest_rate_percent: (loan.interest_rate_bps / 100),
+        due_date: loan.due_date,
+      }));
+      setAvailableLoans(formatted);
     } catch (error) {
       console.error('Failed to fetch loans:', error);
     }
@@ -74,13 +72,9 @@ function App() {
       setMessage('❌ Please enter a valid amount');
       return;
     }
-
     setLoading(true);
     try {
-      const mockTxid = Array(64).fill(0).map(() => 
-        Math.floor(Math.random() * 16).toString(16)
-      ).join('');
-
+      const mockTxid = Array(64).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join('');
       const response = await fetch('http://localhost:8080/deposits', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -91,17 +85,19 @@ function App() {
           lock_duration_days: lockDays > 0 ? lockDays : null,
         }),
       });
-
       if (response.ok) {
         const result = await response.json();
         setMessage(`✅ Deposit created! ID: ${result.deposit_id.substring(0, 8)}...`);
         setDepositAmount('');
         await fetchBalance(paymail);
+      } else {
+        setMessage('❌ Deposit failed');
       }
     } catch (error) {
-      setMessage(`❌ Deposit failed: ${error.message}`);
+      setMessage('❌ Network error');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleLoanRequest = async () => {
@@ -109,15 +105,12 @@ function App() {
       setMessage('❌ Please enter loan amount and collateral');
       return;
     }
-
     const amountSats = Math.floor(parseFloat(loanAmount) * 100000000);
     const collateralSats = Math.floor(parseFloat(collateral) * 100000000);
-
     if (collateralSats < amountSats * 1.5) {
       setMessage('❌ Collateral must be at least 150% of loan amount');
       return;
     }
-
     setLoading(true);
     try {
       const response = await fetch('http://localhost:8082/loans/request', {
@@ -131,21 +124,19 @@ function App() {
           interest_rate_bps: interestRate,
         }),
       });
-
       if (response.ok) {
         const result = await response.json();
         setMessage(`✅ Loan request created! Total repayment: ${(result.total_repayment_satoshis / 100000000).toFixed(8)} BSV`);
         setLoanAmount('');
         setCollateral('');
-        fetchAvailableLoans();
       } else {
-        const error = await response.json();
-        setMessage(`❌ ${error.error}`);
+        setMessage('❌ Loan request failed');
       }
     } catch (error) {
-      setMessage(`❌ Failed: ${error.message}`);
+      setMessage('❌ Network error');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleFundLoan = async (loanId) => {
@@ -156,167 +147,281 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lender_paymail: paymail }),
       });
-
       if (response.ok) {
         setMessage('✅ Loan funded successfully!');
         fetchAvailableLoans();
+      } else {
+        setMessage('❌ Failed to fund loan');
       }
     } catch (error) {
-      setMessage(`❌ Failed: ${error.message}`);
+      setMessage('❌ Network error');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const formatBSV = (satoshis) => (satoshis / 100000000).toFixed(8);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (activeTab === 'lend') {
       fetchAvailableLoans();
     }
   }, [activeTab]);
 
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(to bottom right, #fff7ed, #fef3c7)', padding: '2rem', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
-      <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-        
-        {/* Header */}
-        <div style={{ background: 'white', borderRadius: '1rem', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', padding: '2rem', marginBottom: '2rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <div style={{ background: 'linear-gradient(135deg, #f97316, #dc2626)', padding: '1rem', borderRadius: '1rem' }}>
-                <Wallet style={{ width: '2rem', height: '2rem', color: 'white' }} />
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-6 font-sans">
+      <header className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
+          <Coins className="w-8 h-8 text-orange-500" />
+          BSV Bank
+          <span className="text-xl font-normal text-gray-600 ml-2">Deposits • Lending • Interest</span>
+        </h1>
+        {!connected ? (
+          <button
+            onClick={connectWallet}
+            disabled={loading}
+            className="bg-gradient-to-r from-orange-500 to-orange-600 text-white px-6 py-3 rounded-lg font-semibold flex items-center gap-2 hover:from-orange-600 hover:to-orange-700 transition-colors disabled:opacity-50"
+          >
+            <Wallet className="w-5 h-5" />
+            {loading ? 'Connecting...' : 'Connect Wallet'}
+          </button>
+        ) : (
+          <div className="text-green-600 font-semibold flex items-center gap-2">
+            <AlertCircle className="w-5 h-5" />
+            Connected <span className="bg-green-100 px-3 py-1 rounded-full">{paymail}</span>
+          </div>
+        )}
+      </header>
+
+      {message && (
+        <div className="mb-6 p-4 rounded-lg bg-orange-50 border border-orange-200 text-orange-800 flex items-center gap-2">
+          <AlertCircle className="w-5 h-5 flex-shrink-0" />
+          {message}
+        </div>
+      )}
+
+      {connected && (
+        <nav className="mb-4 flex gap-4">
+          <button
+            onClick={() => setCurrentView('dashboard')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: currentView === 'dashboard' ? '#f97316' : '#f3f4f6',
+              color: currentView === 'dashboard' ? 'white' : '#374151',
+              borderRadius: '0.5rem',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: '600',
+            }}
+          >
+            Dashboard
+          </button>
+          <button
+            onClick={() => setCurrentView('history')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: currentView === 'history' ? '#f97316' : '#f3f4f6',
+              color: currentView === 'history' ? 'white' : '#374151',
+              borderRadius: '0.5rem',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: '600',
+            }}
+          >
+            Loan History
+          </button>
+        </nav>
+      )}
+
+      {connected && balance && currentView === 'dashboard' && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+              <div className="flex items-center gap-2 mb-2">
+                <Wallet className="w-5 h-5 text-blue-500" />
+                <h3 className="font-semibold text-gray-700">Balance</h3>
               </div>
-              <div>
-                <h1 style={{ fontSize: '2rem', fontWeight: 'bold', margin: 0 }}>BSV Bank</h1>
-                <p style={{ color: '#666', margin: 0 }}>Deposits • Lending • Interest</p>
-              </div>
+              <p className="text-2xl font-bold text-gray-900">{formatBSV(balance.balance_satoshis)} BSV</p>
             </div>
-            
-            {!connected ? (
-              <button onClick={connectWallet} disabled={loading} style={{ background: '#f97316', color: 'white', padding: '0.75rem 1.5rem', borderRadius: '0.75rem', border: 'none', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '1rem', opacity: loading ? 0.5 : 1 }}>
-                {loading ? 'Connecting...' : 'Connect Wallet'}
-              </button>
-            ) : (
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: '0.875rem', color: '#666' }}>Connected</div>
-                <div style={{ fontWeight: 'bold', fontFamily: 'monospace', fontSize: '0.875rem' }}>{paymail}</div>
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+              <div className="flex items-center gap-2 mb-2">
+                <TrendingUp className="w-5 h-5 text-green-500" />
+                <h3 className="font-semibold text-gray-700">Interest</h3>
               </div>
-            )}
+              <p className="text-2xl font-bold text-gray-900">{formatBSV(balance.accrued_interest_satoshis)} BSV</p>
+            </div>
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+              <div className="flex items-center gap-2 mb-2">
+                <ArrowDownToLine className="w-5 h-5 text-purple-500" />
+                <h3 className="font-semibold text-gray-700">APY</h3>
+              </div>
+              <p className="text-2xl font-bold text-gray-900">{balance.current_apy.toFixed(2)}%</p>
+            </div>
           </div>
 
-          {message && (
-            <div style={{ marginTop: '1rem', padding: '1rem', borderRadius: '0.5rem', background: message.includes('❌') ? '#fee2e2' : '#d1fae5', color: message.includes('❌') ? '#991b1b' : '#065f46', fontSize: '0.875rem' }}>
-              {message}
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <div className="border-b border-gray-200 flex">
+              {['deposit', 'borrow', 'lend'].map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  style={{
+                    padding: '0.75rem 1.5rem',
+                    border: 'none',
+                    background: 'none',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    color: activeTab === tab ? '#f97316' : '#6b7280',
+                    borderBottom: activeTab === tab ? '3px solid #f97316' : 'none',
+                    marginBottom: '-2px'
+                  }}
+                >
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </button>
+              ))}
             </div>
-          )}
-        </div>
-
-        {connected && balance && (
-          <>
-            {/* Balance Cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
-              <div style={{ background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white', padding: '1.5rem', borderRadius: '1rem' }}>
-                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>Balance</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: '0.5rem 0' }}>{formatBSV(balance.balance_satoshis)} BSV</div>
-              </div>
-              <div style={{ background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)', color: 'white', padding: '1.5rem', borderRadius: '1rem' }}>
-                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>Interest</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: '0.5rem 0' }}>{formatBSV(balance.accrued_interest_satoshis)} BSV</div>
-              </div>
-              <div style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)', color: 'white', padding: '1.5rem', borderRadius: '1rem' }}>
-                <div style={{ fontSize: '0.875rem', opacity: 0.9 }}>APY</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', margin: '0.5rem 0' }}>{balance.current_apy.toFixed(2)}%</div>
-              </div>
-            </div>
-
-            {/* Tabs */}
-            <div style={{ background: 'white', borderRadius: '1rem', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', padding: '2rem', marginBottom: '2rem' }}>
-              <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '2px solid #e5e7eb' }}>
-                {['deposit', 'borrow', 'lend'].map(tab => (
-                  <button key={tab} onClick={() => setActiveTab(tab)} style={{ padding: '0.75rem 1.5rem', border: 'none', background: 'none', cursor: 'pointer', fontWeight: '600', color: activeTab === tab ? '#f97316' : '#6b7280', borderBottom: activeTab === tab ? '3px solid #f97316' : 'none', marginBottom: '-2px' }}>
-                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                  </button>
-                ))}
-              </div>
-
+            <div className="p-6">
               {activeTab === 'deposit' && (
-                <div style={{ space: '1.5rem' }}>
-                  <div style={{ marginBottom: '1.5rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '0.5rem' }}>Amount (BSV)</label>
-                    <input type="number" step="0.00000001" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} style={{ width: '100%', padding: '0.75rem', border: '2px solid #e5e7eb', borderRadius: '0.5rem', fontSize: '1rem' }} placeholder="0.001" />
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Amount (BSV)</label>
+                    <input
+                      type="number"
+                      value={depositAmount}
+                      onChange={e => setDepositAmount(e.target.value)}
+                      style={{ width: '100%', padding: '0.75rem', border: '2px solid #e5e7eb', borderRadius: '0.5rem', fontSize: '1rem' }}
+                      placeholder="0.001"
+                    />
                   </div>
-                  <div style={{ marginBottom: '1.5rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '0.5rem' }}>Lock Period</label>
-                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Lock Period</label>
+                    <div className="flex gap-2">
                       {[0, 7, 30, 90, 365].map(days => (
-                        <button key={days} onClick={() => setLockDays(days)} style={{ flex: '1 1 auto', minWidth: '60px', padding: '0.75rem', borderRadius: '0.5rem', border: 'none', cursor: 'pointer', fontWeight: '500', background: lockDays === days ? '#f97316' : '#f3f4f6', color: lockDays === days ? 'white' : '#374151' }}>
+                        <button
+                          key={days}
+                          onClick={() => setLockDays(days)}
+                          style={{
+                            flex: '1 1 auto',
+                            minWidth: '60px',
+                            padding: '0.75rem',
+                            borderRadius: '0.5rem',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontWeight: '500',
+                            background: lockDays === days ? '#f97316' : '#f3f4f6',
+                            color: lockDays === days ? 'white' : '#374151'
+                          }}
+                        >
                           {days === 0 ? 'None' : `${days}d`}
                         </button>
                       ))}
                     </div>
                   </div>
-                  <button onClick={handleDeposit} disabled={loading || !depositAmount} style={{ width: '100%', background: loading || !depositAmount ? '#9ca3af' : 'linear-gradient(135deg, #f97316, #dc2626)', color: 'white', padding: '1rem', borderRadius: '0.75rem', border: 'none', cursor: loading || !depositAmount ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
-                    <ArrowDownToLine style={{ width: '1.25rem', height: '1.25rem' }} />
+                  <button
+                    onClick={handleDeposit}
+                    disabled={loading}
+                    style={{
+                      width: '100%',
+                      background: 'linear-gradient(135deg, #f97316, #ea580c)',
+                      color: 'white',
+                      padding: '0.75rem',
+                      borderRadius: '0.5rem',
+                      border: 'none',
+                      cursor: loading ? 'not-allowed' : 'pointer',
+                      fontWeight: '600'
+                    }}
+                  >
                     {loading ? 'Processing...' : 'Create Deposit'}
                   </button>
                 </div>
               )}
-
               {activeTab === 'borrow' && (
-                <div>
-                  <div style={{ background: '#fef3c7', padding: '1rem', borderRadius: '0.5rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem' }}>
-                    <AlertCircle style={{ width: '1.25rem', height: '1.25rem', color: '#d97706', flexShrink: 0 }} />
-                    <div style={{ fontSize: '0.875rem', color: '#92400e' }}>
-                      Minimum 150% collateral required. Your collateral is locked until loan repayment.
-                    </div>
+                <div className="space-y-6">
+                  <p className="text-sm text-gray-600 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    Minimum 150% collateral required. Your collateral is locked until loan repayment.
+                  </p>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Loan Amount (BSV)</label>
+                    <input
+                      type="number"
+                      value={loanAmount}
+                      onChange={e => setLoanAmount(e.target.value)}
+                      style={{ width: '100%', padding: '0.75rem', border: '2px solid #e5e7eb', borderRadius: '0.5rem', fontSize: '1rem' }}
+                      placeholder="0.001"
+                    />
                   </div>
-                  <div style={{ marginBottom: '1.5rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '0.5rem' }}>Loan Amount (BSV)</label>
-                    <input type="number" step="0.00000001" value={loanAmount} onChange={(e) => setLoanAmount(e.target.value)} style={{ width: '100%', padding: '0.75rem', border: '2px solid #e5e7eb', borderRadius: '0.5rem', fontSize: '1rem' }} placeholder="0.001" />
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Collateral (BSV) - Min: {loanAmount ? (parseFloat(loanAmount) * 1.5).toFixed(8) : '0'}
+                    </label>
+                    <input
+                      type="number"
+                      value={collateral}
+                      onChange={e => setCollateral(e.target.value)}
+                      style={{ width: '100%', padding: '0.75rem', border: '2px solid #e5e7eb', borderRadius: '0.5rem', fontSize: '1rem' }}
+                      placeholder="0.0015"
+                    />
                   </div>
-                  <div style={{ marginBottom: '1.5rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '0.5rem' }}>Collateral (BSV) - Min: {loanAmount ? (parseFloat(loanAmount) * 1.5).toFixed(8) : '0'}</label>
-                    <input type="number" step="0.00000001" value={collateral} onChange={(e) => setCollateral(e.target.value)} style={{ width: '100%', padding: '0.75rem', border: '2px solid #e5e7eb', borderRadius: '0.5rem', fontSize: '1rem' }} placeholder="0.0015" />
-                  </div>
-                  <button onClick={handleLoanRequest} disabled={loading} style={{ width: '100%', background: loading ? '#9ca3af' : 'linear-gradient(135deg, #3b82f6, #1d4ed8)', color: 'white', padding: '1rem', borderRadius: '0.75rem', border: 'none', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: '1rem' }}>
+                  <button
+                    onClick={handleLoanRequest}
+                    disabled={loading}
+                    style={{
+                      width: '100%',
+                      background: 'linear-gradient(135deg, #f97316, #ea580c)',
+                      color: 'white',
+                      padding: '0.75rem',
+                      borderRadius: '0.5rem',
+                      border: 'none',
+                      cursor: loading ? 'not-allowed' : 'pointer',
+                      fontWeight: '600'
+                    }}
+                  >
                     {loading ? 'Processing...' : 'Request Loan'}
                   </button>
                 </div>
               )}
-
               {activeTab === 'lend' && (
-                <div>
-                  <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginBottom: '1rem' }}>Available Loan Requests</h3>
+                <div className="space-y-6">
+                  <h3 className="text-lg font-semibold text-gray-800">Available Loan Requests</h3>
                   {availableLoans.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '3rem', color: '#6b7280' }}>
-                      <Coins style={{ width: '3rem', height: '3rem', margin: '0 auto 1rem', color: '#d1d5db' }} />
-                      <p>No loan requests available</p>
-                    </div>
+                    <p className="text-gray-500">No loan requests available</p>
                   ) : (
-                    <div style={{ display: 'grid', gap: '1rem' }}>
+                    <div className="space-y-4">
                       {availableLoans.map(loan => (
-                        <div key={loan.loan_id} style={{ border: '2px solid #e5e7eb', borderRadius: '0.75rem', padding: '1.5rem' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '1rem' }}>
-                            <div>
-                              <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>Borrower</div>
-                              <div style={{ fontFamily: 'monospace', fontSize: '0.875rem', fontWeight: '500' }}>{loan.borrower}</div>
-                            </div>
-                            <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>{formatBSV(loan.amount)} BSV</div>
-                              <div style={{ fontSize: '0.75rem', color: '#059669' }}>{loan.interest_rate_percent.toFixed(1)}% APR</div>
-                            </div>
+                        <div key={loan.loan_id} className="bg-gray-50 p-4 rounded-lg space-y-2">
+                          <div className="flex justify-between">
+                            <span className="font-medium">Borrower</span>
+                            <span>{loan.borrower}</span>
                           </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem', fontSize: '0.875rem' }}>
-                            <div>
-                              <span style={{ color: '#6b7280' }}>Collateral: </span>
-                              <span style={{ fontWeight: '500' }}>{formatBSV(loan.collateral)} BSV ({(loan.collateral_ratio * 100).toFixed(0)}%)</span>
-                            </div>
-                            <div>
-                              <span style={{ color: '#6b7280' }}>Due: </span>
-                              <span style={{ fontWeight: '500' }}>{new Date(loan.due_date).toLocaleDateString()}</span>
-                            </div>
+                          <div className="flex justify-between">
+                            <span className="font-medium">Amount</span>
+                            <span>{formatBSV(loan.amount)} BSV</span>
                           </div>
-                          <button onClick={() => handleFundLoan(loan.loan_id)} disabled={loading} style={{ width: '100%', background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white', padding: '0.75rem', borderRadius: '0.5rem', border: 'none', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: '600' }}>
+                          <div className="flex justify-between">
+                            <span className="font-medium">Rate</span>
+                            <span>{loan.interest_rate_percent.toFixed(1)}% APR</span>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Collateral: {formatBSV(loan.collateral)} BSV ({(loan.collateral_ratio * 100).toFixed(0)}%)
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Due: {new Date(loan.due_date).toLocaleDateString()}
+                          </div>
+                          <button
+                            onClick={() => handleFundLoan(loan.loan_id)}
+                            disabled={loading}
+                            style={{
+                              width: '100%',
+                              background: 'linear-gradient(135deg, #10b981, #059669)',
+                              color: 'white',
+                              padding: '0.75rem',
+                              borderRadius: '0.5rem',
+                              border: 'none',
+                              cursor: loading ? 'not-allowed' : 'pointer',
+                              fontWeight: '600'
+                            }}
+                          >
                             Fund This Loan
                           </button>
                         </div>
@@ -326,9 +431,16 @@ function App() {
                 </div>
               )}
             </div>
-          </>
-        )}
-      </div>
+          </div>
+        </>
+      )}
+
+      {connected && currentView === 'history' && (
+        <LoanHistory 
+          userPaymail={paymail}
+          apiBaseUrl="http://localhost:8082"
+        />
+      )}
     </div>
   );
 }

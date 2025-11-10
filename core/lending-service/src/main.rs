@@ -1,8 +1,9 @@
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder, Result};
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc, Duration};
 use uuid::Uuid;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoanRequest {
@@ -28,11 +29,39 @@ pub struct RepaymentRequest {
     pub borrower_paymail: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LoanHistory {
+    pub id: String,
+    pub borrower_paymail: String,
+    pub lender_paymail: Option<String>,
+    pub amount_satoshis: i64,
+    pub collateral_satoshis: i64,
+    pub interest_rate: f64,
+    pub duration_days: i32,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub funded_at: Option<DateTime<Utc>>,
+    pub repaid_at: Option<DateTime<Utc>>,
+    pub liquidated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoanStats {
+    pub total_borrowed: i64,
+    pub total_lent: i64,
+    pub active_borrowed_count: i64,
+    pub active_lent_count: i64,
+    pub pending_count: i64,
+    pub repaid_count: i64,
+    pub liquidated_count: i64,
+    pub total_interest_earned: i64,
+    pub total_interest_paid: i64,
+}
+
 async fn create_pool() -> Result<PgPool, sqlx::Error> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgresql://a:@localhost:5432/bsv_bank".to_string());
-    
-    sqlx::postgres::PgPoolOptions::new()
+    PgPoolOptions::new()
         .max_connections(5)
         .connect(&database_url)
         .await
@@ -57,7 +86,6 @@ async fn create_loan_request(
         request.collateral_satoshis,
         request.amount_satoshis
     );
-    
     if collateral_ratio < 1.5 {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Insufficient collateral. Minimum 150% required",
@@ -65,17 +93,14 @@ async fn create_loan_request(
             "provided": request.collateral_satoshis
         }));
     }
-    
     let loan_id = Uuid::new_v4();
     let now = Utc::now();
     let due_date = now + Duration::days(request.duration_days as i64);
-    
     let annual_rate = bps_to_rate(request.interest_rate_bps);
     let daily_rate = annual_rate / 365.0;
-    let total_interest = (request.amount_satoshis as f64 
-        * daily_rate 
+    let total_interest = (request.amount_satoshis as f64
+        * daily_rate
         * request.duration_days as f64) as i64;
-    
     let result = sqlx::query!(
         r#"
         INSERT INTO loans (
@@ -98,7 +123,6 @@ async fn create_loan_request(
     )
     .fetch_one(pool.as_ref())
     .await;
-    
     match result {
         Ok(_) => {
             HttpResponse::Ok().json(LoanResponse {
@@ -122,8 +146,8 @@ async fn create_loan_request(
 async fn get_available_loans(pool: web::Data<PgPool>) -> impl Responder {
     let result = sqlx::query!(
         r#"
-        SELECT 
-            id, borrower_paymail, principal_satoshis, 
+        SELECT
+            id, borrower_paymail, principal_satoshis,
             collateral_satoshis, interest_rate_bps, due_date
         FROM loans
         WHERE status = 'Pending'
@@ -133,7 +157,6 @@ async fn get_available_loans(pool: web::Data<PgPool>) -> impl Responder {
     )
     .fetch_all(pool.as_ref())
     .await;
-    
     match result {
         Ok(loans) => {
             let loan_list: Vec<_> = loans.iter().map(|loan| {
@@ -150,7 +173,6 @@ async fn get_available_loans(pool: web::Data<PgPool>) -> impl Responder {
                     "due_date": loan.due_date
                 })
             }).collect();
-            
             HttpResponse::Ok().json(loan_list)
         }
         Err(e) => {
@@ -168,7 +190,7 @@ async fn get_user_loans(
 ) -> impl Responder {
     let result = sqlx::query!(
         r#"
-        SELECT 
+        SELECT
             id, borrower_paymail, lender_paymail, principal_satoshis,
             collateral_satoshis, interest_rate_bps, interest_accrued,
             status, created_at, due_date, repaid_at
@@ -180,7 +202,6 @@ async fn get_user_loans(
     )
     .fetch_all(pool.as_ref())
     .await;
-    
     match result {
         Ok(loans) => {
             let loan_list: Vec<_> = loans.iter().map(|loan| {
@@ -199,7 +220,6 @@ async fn get_user_loans(
                     "repaid_at": loan.repaid_at
                 })
             }).collect();
-            
             HttpResponse::Ok().json(loan_list)
         }
         Err(e) => {
@@ -219,7 +239,6 @@ async fn fund_loan(
     let lender_paymail = lender.get("lender_paymail")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    
     let result = sqlx::query!(
         r#"
         UPDATE loans
@@ -232,7 +251,6 @@ async fn fund_loan(
     )
     .fetch_optional(pool.as_ref())
     .await;
-    
     match result {
         Ok(Some(_)) => {
             HttpResponse::Ok().json(serde_json::json!({
@@ -263,7 +281,7 @@ async fn repay_loan(
     // Get loan details
     let loan = sqlx::query!(
         r#"
-        SELECT 
+        SELECT
             borrower_paymail, lender_paymail, principal_satoshis,
             interest_accrued, collateral_satoshis, status, due_date
         FROM loans
@@ -273,7 +291,6 @@ async fn repay_loan(
     )
     .fetch_optional(pool.as_ref())
     .await;
-    
     match loan {
         Ok(Some(loan)) => {
             // Verify borrower
@@ -282,17 +299,14 @@ async fn repay_loan(
                     "error": "Only the borrower can repay this loan"
                 }));
             }
-            
             // Check if loan is active
             if loan.status != "Active" {
                 return HttpResponse::BadRequest().json(serde_json::json!({
                     "error": format!("Loan is not active (status: {})", loan.status)
                 }));
             }
-            
             let total_due = loan.principal_satoshis + loan.interest_accrued;
             let now = Utc::now();
-            
             // Calculate late fee if overdue
             let late_fee = if now > loan.due_date {
                 let days_late = (now - loan.due_date).num_days();
@@ -300,9 +314,7 @@ async fn repay_loan(
             } else {
                 0
             };
-            
             let total_with_fees = total_due + late_fee;
-            
             // Update loan status
             let result = sqlx::query!(
                 r#"
@@ -316,7 +328,6 @@ async fn repay_loan(
             )
             .fetch_one(pool.as_ref())
             .await;
-            
             match result {
                 Ok(_) => {
                     HttpResponse::Ok().json(serde_json::json!({
@@ -354,11 +365,10 @@ async fn repay_loan(
 
 async fn check_liquidations(pool: web::Data<PgPool>) -> impl Responder {
     let now = Utc::now();
-    
     // Find overdue loans
     let overdue = sqlx::query!(
         r#"
-        SELECT 
+        SELECT
             id, borrower_paymail, lender_paymail, principal_satoshis,
             collateral_satoshis, due_date
         FROM loans
@@ -368,14 +378,11 @@ async fn check_liquidations(pool: web::Data<PgPool>) -> impl Responder {
     )
     .fetch_all(pool.as_ref())
     .await;
-    
     match overdue {
         Ok(loans) => {
             let mut liquidated = Vec::new();
-            
             for loan in loans {
                 let days_overdue = (now - loan.due_date).num_days();
-                
                 // Liquidate if more than 7 days overdue
                 if days_overdue > 7 {
                     let result = sqlx::query!(
@@ -390,7 +397,6 @@ async fn check_liquidations(pool: web::Data<PgPool>) -> impl Responder {
                     )
                     .fetch_optional(pool.as_ref())
                     .await;
-                    
                     if result.is_ok() {
                         liquidated.push(serde_json::json!({
                             "loan_id": loan.id,
@@ -402,7 +408,6 @@ async fn check_liquidations(pool: web::Data<PgPool>) -> impl Responder {
                     }
                 }
             }
-            
             HttpResponse::Ok().json(serde_json::json!({
                 "checked_at": now,
                 "liquidated_count": liquidated.len(),
@@ -418,6 +423,104 @@ async fn check_liquidations(pool: web::Data<PgPool>) -> impl Responder {
     }
 }
 
+// Get all loans for a borrower
+#[actix_web::get("/loans/borrower/{paymail}")]
+async fn get_borrower_loans(
+    pool: web::Data<PgPool>,
+    paymail: web::Path<String>,
+) -> Result<HttpResponse> {
+    let loans = sqlx::query_as::<_, LoanHistory>(
+        r#"
+        SELECT id, borrower_paymail, lender_paymail, amount_satoshis, collateral_satoshis, interest_rate, duration_days, status, created_at, funded_at, repaid_at, liquidated_at
+        FROM loans
+        WHERE borrower_paymail = $1
+        ORDER BY created_at DESC
+        "#
+    )
+    .bind(paymail.as_str())
+    .fetch_all(pool.get_ref())
+    .await
+    .map_err(|e| {
+        eprintln!("Database error fetching borrower loans: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch loans")
+    })?;
+    Ok(HttpResponse::Ok().json(loans))
+}
+
+// Get all loans funded by a lender
+#[actix_web::get("/loans/lender/{paymail}")]
+async fn get_lender_loans(
+    pool: web::Data<PgPool>,
+    paymail: web::Path<String>,
+) -> Result<HttpResponse> {
+    let loans = sqlx::query_as::<_, LoanHistory>(
+        r#"
+        SELECT id, borrower_paymail, lender_paymail, amount_satoshis, collateral_satoshis, interest_rate, duration_days, status, created_at, funded_at, repaid_at, liquidated_at
+        FROM loans
+        WHERE lender_paymail = $1
+        ORDER BY created_at DESC
+        "#
+    )
+    .bind(paymail.as_str())
+    .fetch_all(pool.get_ref())
+    .await
+    .map_err(|e| {
+        eprintln!("Database error fetching lender loans: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch loans")
+    })?;
+    Ok(HttpResponse::Ok().json(loans))
+}
+
+// Get detailed loan statistics for a user
+#[actix_web::get("/loans/stats/{paymail}")]
+async fn get_loan_stats(
+    pool: web::Data<PgPool>,
+    paymail: web::Path<String>,
+) -> Result<HttpResponse> {
+    let stats = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(CASE WHEN borrower_paymail = $1 THEN amount_satoshis ELSE 0 END), 0) as total_borrowed,
+            COALESCE(SUM(CASE WHEN lender_paymail = $1 THEN amount_satoshis ELSE 0 END), 0) as total_lent,
+            COALESCE(COUNT(CASE WHEN borrower_paymail = $1 AND status = 'Active' THEN 1 END), 0) as active_borrowed_count,
+            COALESCE(COUNT(CASE WHEN lender_paymail = $1 AND status = 'Active' THEN 1 END), 0) as active_lent_count,
+            COALESCE(COUNT(CASE WHEN status = 'Pending' THEN 1 END), 0) as pending_count,
+            COALESCE(COUNT(CASE WHEN status = 'Repaid' THEN 1 END), 0) as repaid_count,
+            COALESCE(COUNT(CASE WHEN status = 'Liquidated' THEN 1 END), 0) as liquidated_count,
+            COALESCE(SUM(CASE WHEN lender_paymail = $1 AND status IN ('Repaid', 'Active') THEN CAST(amount_satoshis * interest_rate AS BIGINT) ELSE 0 END), 0) as total_interest_earned,
+            COALESCE(SUM(CASE WHEN borrower_paymail = $1 AND status = 'Repaid' THEN CAST(amount_satoshis * interest_rate AS BIGINT) ELSE 0 END), 0) as total_interest_paid
+        FROM loans
+        WHERE borrower_paymail = $1 OR lender_paymail = $1
+        "#
+    )
+    .bind(paymail.as_str())
+    .fetch_one(pool.get_ref())
+    .await
+    .map_err(|e| {
+        eprintln!("Database error fetching loan stats: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch statistics")
+    })?;
+    let stats = LoanStats {
+        total_borrowed: stats.0,
+        total_lent: stats.1,
+        active_borrowed_count: stats.2,
+        active_lent_count: stats.3,
+        pending_count: stats.4,
+        repaid_count: stats.5,
+        liquidated_count: stats.6,
+        total_interest_earned: stats.7,
+        total_interest_paid: stats.8,
+    };
+    Ok(HttpResponse::Ok().json(stats))
+}
+
+pub fn configure_routes(cfg: &mut web::ServiceConfig) {
+    cfg
+        .service(get_borrower_loans)
+        .service(get_lender_loans)
+        .service(get_loan_stats);
+}
+
 async fn health_check() -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
         "service": "lending-service",
@@ -430,13 +533,10 @@ async fn health_check() -> impl Responder {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     println!("🤝 BSV Bank - Lending Service Starting...");
-    
     let pool = create_pool().await
         .expect("Failed to create database pool");
-    
     println!("✅ Service ready on http://0.0.0.0:8082");
     println!("📋 New endpoints: /repay, /liquidations, /my-loans");
-    
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
@@ -447,6 +547,7 @@ async fn main() -> std::io::Result<()> {
             .route("/loans/{id}/fund", web::post().to(fund_loan))
             .route("/loans/{id}/repay", web::post().to(repay_loan))
             .route("/loans/liquidations/check", web::post().to(check_liquidations))
+            .configure(configure_routes)
     })
     .bind(("0.0.0.0", 8082))?
     .run()
