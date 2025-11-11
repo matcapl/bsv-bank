@@ -43,7 +43,7 @@ if lsof -Pi :8083 -sTCP:LISTEN -t >/dev/null ; then
 else
     echo "Starting payment-channel-service..."
     cd core/payment-channel-service
-    cargo run > ../../logs/payment-channel.log 2>&1 &
+    cargo run > ../../logs/payment-channels.log 2>&1 &
     PAYMENT_PID=$!
     # nohup ./core/payment-channel-service/target/release/payment-channel-service > logs/payment-channels.log 2>&1 & PAYMENT_PID=$!
     echo "  ✓ Payment channel service (PID: $PAYMENT_PID)"
@@ -71,4 +71,4 @@ echo "Logs:"
 echo "  tail -f logs/deposit.log"
 echo "  tail -f logs/interest.log"
 echo "  tail -f logs/lending.log"
-echo "  tail -f logs/payment-channel.log"
+echo "  tail -f logs/payment-channels.log"

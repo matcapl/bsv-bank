@@ -27,17 +27,17 @@ CREATE TABLE IF NOT EXISTS payment_channels (
     sequence_number BIGINT NOT NULL DEFAULT 0 CHECK (sequence_number >= 0),
     
     -- Timing
-    opened_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    closed_at TIMESTAMP,
-    last_payment_at TIMESTAMP,
-    
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    closed_at TIMESTAMPTZ,
+    last_payment_at TIMESTAMPTZ,
+
     -- Settlement
     settlement_txid VARCHAR(64),
     timeout_blocks INT DEFAULT 144 CHECK (timeout_blocks > 0),
     
     -- Metadata
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     
     -- Constraints
     CONSTRAINT balance_conservation CHECK (
