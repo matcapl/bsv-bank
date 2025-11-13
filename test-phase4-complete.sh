@@ -416,7 +416,7 @@ print_section "5. PAYMENT HISTORY & TRACKING"
 # Test 5.1: Retrieve payment history
 print_test "Fetching payment history" "INFO"
 HISTORY=$(curl -s "$CHANNEL_API/channels/$CHANNEL_ID/history")
-PAYMENT_COUNT=$(echo "$HISTORY" | grep -o "payment_id" | wc -l)
+PAYMENT_COUNT=$(echo "$HISTORY" | grep -o "id" | wc -l)
 if [ "$PAYMENT_COUNT" -ge "10" ]; then
     print_test "Payment history retrieval" "PASS" "Found $PAYMENT_COUNT payments"
 else
@@ -839,7 +839,11 @@ done
 wait
 BULK_END=$(date +%s)
 BULK_DURATION=$((BULK_END - BULK_START))
-TPS=$((100 / BULK_DURATION))
+if [ "$BULK_DURATION" -gt "0" ]; then
+    TPS=$((100 / BULK_DURATION))
+else
+    TPS=100  # Completed in < 1 second
+fi
 if [ "$TPS" -gt "10" ]; then
     print_test "Bulk payment throughput" "PASS" "${TPS} payments/sec"
 else

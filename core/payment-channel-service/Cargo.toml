@@ -9,9 +9,11 @@ description = "Payment channel service for instant micropayments"
 # Web framework
 actix-web = "4.4"
 actix-rt = "2.9"
+actix-cors = "0.7"
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "bigdecimal"] }
+bigdecimal = "0.4"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

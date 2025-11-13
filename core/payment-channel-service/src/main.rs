@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::time::Instant;
+use actix_cors::Cors;
 
 // ============================================================================
 // DATA STRUCTURES
@@ -444,6 +445,35 @@ async fn get_user_channels(
     }
 }
 
+// Get all channels (for admin/debugging)
+async fn get_all_channels(
+    pool: web::Data<PgPool>,
+) -> Result<HttpResponse> {
+    let channels = sqlx::query_as::<_, PaymentChannel>(
+        r#"
+        SELECT * FROM payment_channels 
+        ORDER BY opened_at DESC
+        LIMIT 1000
+        "#
+    )
+    .fetch_all(pool.get_ref())
+    .await;
+    
+    match channels {
+        Ok(channels) => Ok(HttpResponse::Ok().json(serde_json::json!({
+            "total_channels": channels.len(),
+            "channels": channels
+        }))),
+        Err(e) => {
+            eprintln!("Error fetching all channels: {}", e);
+            Ok(create_error_response(
+                "DatabaseError",
+                "Failed to fetch channels"
+            ))
+        }
+    }
+}
+
 // Get current balance
 async fn get_channel_balance(
     pool: web::Data<PgPool>,
@@ -533,6 +563,282 @@ async fn close_channel(
 }
 
 // ============================================================================
+// STATISTICS & ANALYTICS ENDPOINTS
+// ============================================================================
+
+// Get channel statistics
+async fn get_channel_stats(
+    pool: web::Data<PgPool>,
+    channel_id: web::Path<String>,
+) -> Result<HttpResponse> {
+    // Get payment count and volume (cast aggregates to BIGINT)
+    let stats = sqlx::query!(
+        r#"
+        SELECT 
+            COUNT(*) as total_payments,
+            COALESCE(SUM(amount_satoshis)::BIGINT, 0) as "total_volume!",
+            COALESCE(AVG(amount_satoshis)::BIGINT, 0) as "avg_payment!",
+            COALESCE(MAX(amount_satoshis), 0) as max_payment,
+            COALESCE(MIN(amount_satoshis), 0) as min_payment
+        FROM channel_payments
+        WHERE channel_id = $1
+        "#,
+        channel_id.as_str()
+    )
+    .fetch_one(pool.get_ref())
+    .await;
+    
+    match stats {
+        Ok(stats) => {
+            let total_payments = stats.total_payments.unwrap_or(0);
+            
+            Ok(HttpResponse::Ok().json(serde_json::json!({
+                "channel_id": channel_id.as_str(),
+                "total_payments": total_payments,
+                "total_volume": stats.total_volume,
+                "average_payment": stats.avg_payment,
+                "largest_payment": stats.max_payment.unwrap_or(0),
+                "smallest_payment": if total_payments > 0 {
+                    stats.min_payment.unwrap_or(0)
+                } else {
+                    0
+                }
+            })))
+        }
+        Err(e) => {
+            eprintln!("Error fetching channel stats: {}", e);
+            Ok(create_error_response(
+                "DatabaseError",
+                "Failed to fetch statistics"
+            ))
+        }
+    }
+}
+
+// Get network-wide statistics
+async fn get_network_stats(
+    pool: web::Data<PgPool>,
+) -> Result<HttpResponse> {
+    // Get channel counts by status (cast SUM to BIGINT)
+    let channel_stats = sqlx::query!(
+        r#"
+        SELECT 
+            COUNT(*) as total_channels,
+            COUNT(CASE WHEN status = 'Active' THEN 1 END) as active_channels,
+            COUNT(CASE WHEN status = 'Open' THEN 1 END) as open_channels,
+            COUNT(CASE WHEN status = 'Closed' THEN 1 END) as closed_channels,
+            COALESCE(SUM(current_balance_a + current_balance_b)::BIGINT, 0) as "total_value_locked!"
+        FROM payment_channels
+        "#
+    )
+    .fetch_one(pool.get_ref())
+    .await;
+    
+    // Get payment stats for last 24 hours (cast SUM to BIGINT)
+    let payment_stats = sqlx::query!(
+        r#"
+        SELECT 
+            COUNT(*) as payments_24h,
+            COALESCE(SUM(amount_satoshis)::BIGINT, 0) as "volume_24h!"
+        FROM channel_payments
+        WHERE created_at > NOW() - INTERVAL '24 hours'
+        "#
+    )
+    .fetch_one(pool.get_ref())
+    .await;
+    
+    match (channel_stats, payment_stats) {
+        (Ok(channels), Ok(payments)) => {
+            let total_channels = channels.total_channels.unwrap_or(0);
+            let avg_balance = if total_channels > 0 {
+                channels.total_value_locked / total_channels  // No unwrap_or needed - it's marked with !
+            } else {
+                0
+            };
+            
+            Ok(HttpResponse::Ok().json(serde_json::json!({
+                "total_channels": total_channels,
+                "active_channels": channels.active_channels.unwrap_or(0),
+                "open_channels": channels.open_channels.unwrap_or(0),
+                "closed_channels": channels.closed_channels.unwrap_or(0),
+                "total_value_locked": channels.total_value_locked,  // No unwrap_or - marked with !
+                "average_channel_balance": avg_balance,
+                "total_payments_24h": payments.payments_24h.unwrap_or(0),
+                "total_volume_24h": payments.volume_24h,  // No unwrap_or - marked with !
+                "timestamp": Utc::now()
+            })))
+        }
+        _ => {
+            Ok(create_error_response(
+                "DatabaseError",
+                "Failed to fetch network statistics"
+            ))
+        }
+    }
+}
+
+// Force close a channel (dispute handling)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ForceCloseRequest {
+    pub party_paymail: String,
+    pub reason: Option<String>,
+}
+
+async fn force_close_channel(
+    pool: web::Data<PgPool>,
+    channel_id: web::Path<String>,
+    request: web::Json<ForceCloseRequest>,
+) -> Result<HttpResponse> {
+    // Get current channel state
+    let channel = sqlx::query_as::<_, PaymentChannel>(
+        "SELECT * FROM payment_channels WHERE channel_id = $1"
+    )
+    .bind(channel_id.as_str())
+    .fetch_optional(pool.get_ref())
+    .await;
+    
+    match channel {
+        Ok(Some(channel)) => {
+            // Verify party is authorized
+            if channel.party_a_paymail != request.party_paymail 
+                && channel.party_b_paymail != request.party_paymail {
+                return Ok(HttpResponse::Forbidden().json(ErrorResponse {
+                    error: "Unauthorized".to_string(),
+                    message: "Only channel parties can force close".to_string(),
+                    timestamp: Utc::now(),
+                }));
+            }
+            
+            // Check if channel can be force closed
+            if channel.status == "Closed" {
+                return Ok(create_error_response(
+                    "ChannelClosed",
+                    "Channel is already closed"
+                ));
+            }
+            
+            // Mark channel as disputed
+            let result = sqlx::query_as::<_, PaymentChannel>(
+                r#"
+                UPDATE payment_channels 
+                SET status = 'Disputed',
+                    updated_at = NOW()
+                WHERE channel_id = $1
+                RETURNING *
+                "#
+            )
+            .bind(channel_id.as_str())
+            .fetch_one(pool.get_ref())
+            .await;
+            
+            match result {
+                Ok(updated_channel) => {
+                    Ok(HttpResponse::Ok().json(serde_json::json!({
+                        "channel_id": updated_channel.channel_id,
+                        "status": "Disputed",
+                        "dispute_initiated_by": request.party_paymail,
+                        "reason": request.reason.as_ref().unwrap_or(&"No reason provided".to_string()),
+                        "current_balance_a": updated_channel.current_balance_a,
+                        "current_balance_b": updated_channel.current_balance_b,
+                        "dispute_started_at": Utc::now(),
+                        "timeout_blocks": updated_channel.timeout_blocks,
+                        "message": "Force closure initiated. Counterparty has timeout period to respond."
+                    })))
+                }
+                Err(e) => {
+                    eprintln!("Error force closing channel: {}", e);
+                    Ok(create_error_response(
+                        "DatabaseError",
+                        "Failed to force close channel"
+                    ))
+                }
+            }
+        }
+        Ok(None) => {
+            Ok(HttpResponse::NotFound().json(ErrorResponse {
+                error: "NotFound".to_string(),
+                message: "Channel not found".to_string(),
+                timestamp: Utc::now(),
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error fetching channel: {}", e);
+            Ok(create_error_response(
+                "DatabaseError",
+                "Failed to fetch channel"
+            ))
+        }
+    }
+}
+
+// Check for timeout expirations (admin function)
+async fn check_timeouts(
+    pool: web::Data<PgPool>,
+) -> Result<HttpResponse> {
+    // Find disputed channels that have exceeded timeout
+    // In a real implementation, this would check blockchain height
+    // For now, we'll use a simple time-based check
+    
+    let expired = sqlx::query_as::<_, PaymentChannel>(
+        r#"
+        SELECT * FROM payment_channels
+        WHERE status = 'Disputed'
+        AND updated_at < NOW() - INTERVAL '1 hour'
+        "#
+    )
+    .fetch_all(pool.get_ref())
+    .await;
+    
+    match expired {
+        Ok(channels) => {
+            let mut closed_channels = Vec::new();
+            
+            for channel in channels {
+                // Force close the channel
+                let settlement_txid = format!("force-settlement-{}", Uuid::new_v4());
+                
+                let result = sqlx::query!(
+                    r#"
+                    UPDATE payment_channels
+                    SET status = 'Closed',
+                        closed_at = NOW(),
+                        settlement_txid = $1
+                    WHERE channel_id = $2
+                    "#,
+                    &settlement_txid,
+                    &channel.channel_id
+                )
+                .execute(pool.get_ref())
+                .await;
+                
+                if result.is_ok() {
+                    closed_channels.push(serde_json::json!({
+                        "channel_id": channel.channel_id,
+                        "final_balance_a": channel.current_balance_a,
+                        "final_balance_b": channel.current_balance_b,
+                        "settlement_txid": settlement_txid
+                    }));
+                }
+            }
+            
+            Ok(HttpResponse::Ok().json(serde_json::json!({
+                "checked_at": Utc::now(),
+                "expired_channels": closed_channels.len(),
+                "channels": closed_channels,
+                "message": format!("Processed {} expired dispute(s)", closed_channels.len())
+            })))
+        }
+        Err(e) => {
+            eprintln!("Error checking timeouts: {}", e);
+            Ok(create_error_response(
+                "DatabaseError",
+                "Failed to check timeouts"
+            ))
+        }
+    }
+}
+
+// ============================================================================
 // MAIN SERVER
 // ============================================================================
 
@@ -557,7 +863,13 @@ async fn main() -> std::io::Result<()> {
     println!("");
     
     HttpServer::new(move || {
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header();
+            
         App::new()
+            .wrap(cors)
             .app_data(web::Data::new(pool.clone()))
             .route("/health", web::get().to(health_check))
             .route("/channels/open", web::post().to(open_channel))
@@ -566,6 +878,11 @@ async fn main() -> std::io::Result<()> {
             .route("/channels/{channel_id}/history", web::get().to(get_channel_history))
             .route("/channels/{channel_id}/balance", web::get().to(get_channel_balance))
             .route("/channels/user/{paymail}", web::get().to(get_user_channels))
+            .route("/channels", web::get().to(get_all_channels))
+            .route("/channels/{channel_id}/stats", web::get().to(get_channel_stats))
+            .route("/stats/network", web::get().to(get_network_stats))
+            .route("/channels/{channel_id}/force-close", web::post().to(force_close_channel))
+            .route("/channels/check-timeouts", web::post().to(check_timeouts))            
             .route("/channels/{channel_id}/close", web::post().to(close_channel))
     })
     .bind(("0.0.0.0", 8083))?

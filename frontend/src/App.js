@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, TrendingUp, ArrowDownToLine, Coins, AlertCircle } from 'lucide-react';
 import LoanHistory from './components/LoanHistory';
+import PaymentChannels from './components/PaymentChannels';
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -230,6 +231,20 @@ function App() {
           >
             Loan History
           </button>
+          <button
+            onClick={() => setCurrentView('channels')}
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: currentView === 'channels' ? '#f97316' : '#f3f4f6',
+              color: currentView === 'channels' ? 'white' : '#374151',
+              borderRadius: '0.5rem',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: '600',
+            }}
+          >
+            Payment Channels
+          </button>
         </nav>
       )}
 
@@ -439,6 +454,12 @@ function App() {
         <LoanHistory 
           userPaymail={paymail}
           apiBaseUrl="http://localhost:8082"
+        />
+      )}
+      
+      {connected && currentView === 'channels' && (
+        <PaymentChannels 
+          userPaymail={paymail} 
         />
       )}
     </div>
