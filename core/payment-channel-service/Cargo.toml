@@ -34,6 +34,9 @@ sha2 = "0.10"
 # Environment variables
 dotenv = "0.15"
 
+env_logger = "0.11"
+log = "0.4"
+
 [profile.release]
 opt-level = 3
 lto = true

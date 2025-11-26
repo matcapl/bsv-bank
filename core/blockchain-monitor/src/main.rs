@@ -60,6 +60,7 @@ struct Transaction {
     raw_tx: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 struct WatchedAddress {
     address: String,
@@ -94,6 +95,7 @@ struct ConfirmationUpdate {
 // WhatsOnChain API response types
 #[derive(Debug, Deserialize)]
 struct WocTransaction {
+    #[allow(dead_code)]
     txid: String,
     confirmations: Option<i32>,
     blockhash: Option<String>,
@@ -108,16 +110,21 @@ struct WocTransaction {
 
 #[derive(Debug, Deserialize)]
 struct WocInput {
+    #[allow(dead_code)]
     txid: Option<String>,
+    #[allow(dead_code)]
     vout: Option<u32>,
-    scriptSig: Option<WocScript>,
+    #[serde(rename = "scriptSig")]
+    script_sig: Option<WocScript>,
 }
 
 #[derive(Debug, Deserialize)]
 struct WocOutput {
     value: Option<f64>,
+    #[allow(dead_code)]
     n: Option<u32>,
-    scriptPubKey: Option<WocScript>,
+    #[serde(rename = "scriptPubKey")]
+    script_pub_key: Option<WocScript>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,16 +261,47 @@ impl AppState {
     async fn woc_get_address_balance(&self, address: &str) -> Result<WocBalance, String> {
         let url = format!("{}/address/{}/balance", self.config.woc_api_base, address);
         
+        log::debug!("Fetching balance from: {}", url);
+        
         let response = self.client
             .get(&url)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| format!("WoC API error: {}", e))?;
         
-        response
-            .json::<WocBalance>()
+        let status = response.status();
+        log::debug!("WoC API response status: {}", status);
+        
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            log::error!("WoC API error for {}: status={}, body={}", address, status, error_text);
+            return Err(format!("WoC API returned status: {} - {}", status, error_text));
+        }
+        
+        // Get response as text first for better error messages
+        let response_text = response
+            .text()
             .await
-            .map_err(|e| format!("Failed to parse WoC response: {}", e))
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+        
+        log::debug!("WoC API raw response: {}", response_text);
+        
+        // Check for empty response
+        if response_text.trim().is_empty() {
+            log::warn!("Empty response from WoC for address: {}", address);
+            return Ok(WocBalance {
+                confirmed: 0,
+                unconfirmed: 0,
+            });
+        }
+        
+        // Parse JSON
+        serde_json::from_str::<WocBalance>(&response_text)
+            .map_err(|e| {
+                log::error!("JSON parse error: {} (response was: '{}')", e, response_text);
+                format!("Failed to parse WoC response: error decoding response body: {}", e)
+            })
     }
     
     async fn woc_broadcast_transaction(&self, tx_hex: &str) -> Result<String, String> {
@@ -539,7 +577,7 @@ async fn check_address_for_new_transactions(state: &AppState, address: &str) -> 
 fn extract_from_address(woc_tx: &WocTransaction) -> Option<String> {
     woc_tx.inputs.as_ref()
         .and_then(|inputs| inputs.first())
-        .and_then(|input| input.scriptSig.as_ref())
+        .and_then(|input| input.script_sig.as_ref())
         .and_then(|script| script.addresses.as_ref())
         .and_then(|addrs| addrs.first())
         .cloned()
@@ -548,7 +586,7 @@ fn extract_from_address(woc_tx: &WocTransaction) -> Option<String> {
 fn extract_to_address(woc_tx: &WocTransaction) -> Option<String> {
     woc_tx.outputs.as_ref()
         .and_then(|outputs| outputs.first())
-        .and_then(|output| output.scriptPubKey.as_ref())
+        .and_then(|output| output.script_pub_key.as_ref())
         .and_then(|script| script.addresses.as_ref())
         .and_then(|addrs| addrs.first())
         .cloned()

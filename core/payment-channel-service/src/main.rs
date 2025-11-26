@@ -839,7 +839,7 @@ async fn check_timeouts(
 }
 
 // ============================================================================
-// MAIN SERVER
+// PREVIOUS (AND RETURNED TO) MAIN SERVER
 // ============================================================================
 
 #[actix_web::main]
@@ -889,3 +889,54 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+
+// // ============================================================================
+// // EXAMPLE 12: Main Application Setup
+// // services/channel-service/src/main.rs (Updated - NO! merely proposed and likely to be rejected)
+// // ============================================================================
+
+// #[actix_web::main]
+// async fn main() -> std::io::Result<()> {
+//     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    
+//     println!("🚀 Starting Enhanced Channel Service (Phase 5)");
+    
+//     let state = web::Data::new(
+//         AppState::new()
+//             .await
+//             .expect("Failed to initialize application state")
+//     );
+    
+//     println!("✓ Database connected");
+//     println!("✓ Blockchain services configured:");
+//     println!("   - Monitor: {}", state.blockchain_config.blockchain_monitor_url);
+//     println!("   - TX Builder: {}", state.blockchain_config.tx_builder_url);
+//     println!("   - SPV Service: {}", state.blockchain_config.spv_service_url);
+//     println!("   - Network: {}", state.blockchain_config.network);
+//     println!("   - Blockchain enabled: {}", state.blockchain_config.enable_blockchain);
+    
+//     println!("✓ Server starting on http://127.0.0.1:8083");
+    
+//     HttpServer::new(move || {
+//         let cors = Cors::default()
+//             .allow_any_origin()
+//             .allow_any_method()
+//             .allow_any_header()
+//             .max_age(3600);
+        
+//         App::new()
+//             .wrap(cors)
+//             .app_data(state.clone())
+//             // Phase 5 enhanced endpoints
+//             .route("/channels/create", web::post().to(create_channel_handler))
+//             .route("/channels/{id}/status", web::get().to(get_channel_status_handler))
+//             .route("/channels/{id}/close", web::post().to(close_channel_handler))
+//             // Existing Phase 4 endpoints...
+//             .route("/health", web::get().to(health_check))
+//             .route("/channels/{id}", web::get().to(get_channel))
+//             .route("/channels/{id}/pay", web::post().to(make_payment))
+//     })
+//     .bind("127.0.0.1:8083")?
+//     .run()
+//     .await
+// }

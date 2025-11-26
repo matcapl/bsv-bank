@@ -856,6 +856,7 @@ async fn main() -> std::io::Result<()> {
             .route("/tx/build/funding", web::post().to(build_funding))
             .route("/tx/build/commitment", web::post().to(build_commitment))
             .route("/tx/build/settlement", web::post().to(build_settlement))
+            // .route("/tx/estimate-fee", web::post().to(estimate_fee))
             .route("/tx/estimate-fee", web::post().to(estimate_fee))
             .route("/tx/select-utxos", web::post().to(select_utxos_handler))
             .route("/tx/validate", web::post().to(validate_transaction))

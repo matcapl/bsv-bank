@@ -10,7 +10,6 @@ config.json
 
 commands.txt
 nvm-install.txt
-more-logs.txt
 desirables.txt
 
 junk/
@@ -18,4 +17,6 @@ junk/
 venv/
 .venv
 env/
+
+logs/
 

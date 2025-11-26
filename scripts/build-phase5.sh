@@ -18,7 +18,7 @@ build_service() {
     local service_dir=$2
     
     echo -e "${BLUE}Building${NC} $service_name..."
-    cd "$PROJECT_ROOT/services/$service_dir"
+    cd "$PROJECT_ROOT/core/$service_dir"
     cargo build --release
     echo -e "${GREEN}✓${NC} $service_name built"
     cd "$PROJECT_ROOT"
