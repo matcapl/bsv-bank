@@ -961,17 +961,29 @@ test_enhanced_channels() {
     subsection "Off-Chain Payments (10 tests)"
     if [ ${#TEST_CHANNELS[@]} -gt 0 ]; then
         local test_channel="${TEST_CHANNELS[0]}"
-        local alice="${ALICE_PAYMAIL}"
-        local bob="${BOB_PAYMAIL}"
+
+        # local alice="${ALICE_PAYMAIL}"
+        # local bob="${BOB_PAYMAIL}"
         
+        # Get the actual paymails from the channel we created
+        local channel_info=$(curl -sf "$CHANNEL_SERVICE/channels/$test_channel" 2>/dev/null || echo "{}")
+        local alice=$(echo "$channel_info" | jq -r '.party_a_paymail // empty')
+        local bob=$(echo "$channel_info" | jq -r '.party_b_paymail // empty')
+        
+        # Fallback if channel info fetch fails
+        if [ -z "$alice" ] || [ -z "$bob" ]; then
+            alice="alice-ch132-${TEST_RUN_ID}@bsvbank.test"
+            bob="bob-ch132-${TEST_RUN_ID}@bsvbank.test"
+        fi
+
         for i in {147..156}; do
             ((TOTAL_TESTS++))
             # local payment_response=$(curl -sf -X POST "$CHANNEL_SERVICE/channels/$test_channel/pay" \
             local payment_response=$(curl -sf -X POST "$CHANNEL_SERVICE/channels/$test_channel/payment" \
                 -H "Content-Type: application/json" \
                 -d "{
-                    \"from\": \"$alice\",
-                    \"to\": \"$bob\",
+                    \"from_paymail\": \"$alice\",
+                    \"to_paymail\": \"$bob\",
                     \"amount_satoshis\": 100
                 }" 2>/dev/null || echo "{}")
             

@@ -14,6 +14,27 @@ use actix_cors::Cors;
 // DATA STRUCTURES
 // ============================================================================
 
+// #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+// pub struct PaymentChannel {
+//     pub id: Uuid,
+//     pub channel_id: String,
+//     pub party_a_paymail: String,
+//     pub party_b_paymail: String,
+//     pub initial_balance_a: i64,
+//     pub initial_balance_b: i64,
+//     pub current_balance_a: i64,
+//     pub current_balance_b: i64,
+//     pub status: String,
+//     pub sequence_number: i64,
+//     pub opened_at: DateTime<Utc>,
+//     pub closed_at: Option<DateTime<Utc>>,
+//     pub last_payment_at: Option<DateTime<Utc>>,
+//     pub settlement_txid: Option<String>,
+//     pub timeout_blocks: i32,
+//     pub created_at: DateTime<Utc>,
+//     pub updated_at: DateTime<Utc>,
+// }
+
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PaymentChannel {
     pub id: Uuid,
@@ -33,6 +54,17 @@ pub struct PaymentChannel {
     pub timeout_blocks: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // Phase 5 additions (optional for backward compatibility)
+    pub blockchain_enabled: Option<bool>,
+    pub funding_txid: Option<String>,
+    pub funding_address: Option<String>,
+    pub funding_vout: Option<i32>,
+    pub funding_confirmations: Option<i32>,
+    pub settlement_confirmations: Option<i32>,
+    pub spv_verified: Option<bool>,
+    pub multisig_script: Option<String>,
+    pub redeem_script: Option<String>,
+    pub current_commitment_txid: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -231,7 +263,126 @@ async fn open_channel(
     }
 }
 
-// Send payment through channel
+// // Send payment through channel
+// async fn send_payment(
+//     pool: web::Data<PgPool>,
+//     channel_id: web::Path<String>,
+//     request: web::Json<SendPaymentRequest>,
+// ) -> Result<HttpResponse> {
+//     let start_time = Instant::now();
+    
+//     // Validate request
+//     if request.amount_satoshis <= 0 {
+//         return Ok(create_error_response(
+//             "InvalidAmount",
+//             "Amount must be positive"
+//         ));
+//     }
+    
+//     if request.from_paymail == request.to_paymail {
+//         return Ok(create_error_response(
+//             "InvalidRequest",
+//             "Cannot pay yourself"
+//         ));
+//     }
+    
+//     // Use database function for atomic payment processing
+//     let result = sqlx::query!(
+//         r#"
+//         SELECT process_channel_payment($1, $2, $3, $4, $5) as result
+//         "#,
+//         channel_id.as_str(),
+//         &request.from_paymail,
+//         &request.to_paymail,
+//         request.amount_satoshis,
+//         request.memo.as_deref()
+//     )
+//     .fetch_one(pool.get_ref())
+//     .await;
+    
+//     match result {
+//         Ok(record) => {
+//             let processing_time = start_time.elapsed().as_millis() as i32;
+            
+//             if let Some(json) = record.result {
+//                 let payment_data: serde_json::Value = json;
+                
+//                 // Update processing time
+//                 if let Some(payment_id) = payment_data.get("payment_id").and_then(|v| v.as_str()) {
+//                     let _ = sqlx::query!(
+//                         "UPDATE channel_payments SET processing_time_ms = $1 WHERE id = $2",
+//                         processing_time,
+//                         Uuid::parse_str(payment_id).ok()
+//                     )
+//                     .execute(pool.get_ref())
+//                     .await;
+//                 }
+                
+//                 Ok(HttpResponse::Ok().json(PaymentResponse {
+//                     payment_id: Uuid::parse_str(
+//                         payment_data.get("payment_id")
+//                             .and_then(|v| v.as_str())
+//                             .unwrap_or("")
+//                     ).unwrap_or_else(|_| Uuid::new_v4()),
+//                     channel_id: channel_id.to_string(),
+//                     from_paymail: request.from_paymail.clone(),
+//                     to_paymail: request.to_paymail.clone(),
+//                     amount_satoshis: request.amount_satoshis,
+//                     sequence_number: payment_data.get("sequence_number")
+//                         .and_then(|v| v.as_i64())
+//                         .unwrap_or(0),
+//                     balance_a: payment_data.get("balance_a")
+//                         .and_then(|v| v.as_i64())
+//                         .unwrap_or(0),
+//                     balance_b: payment_data.get("balance_b")
+//                         .and_then(|v| v.as_i64())
+//                         .unwrap_or(0),
+//                     created_at: Utc::now(),
+//                     processing_time_ms: processing_time,
+//                 }))
+//             } else {
+//                 Ok(create_error_response(
+//                     "ProcessingError",
+//                     "Payment processing failed"
+//                 ))
+//             }
+//         }
+//         Err(e) => {
+//             eprintln!("Payment error: {}", e);
+//             let error_msg = e.to_string();
+            
+//             if error_msg.contains("not found") {
+//                 Ok(HttpResponse::NotFound().json(ErrorResponse {
+//                     error: "ChannelNotFound".to_string(),
+//                     message: "Channel does not exist".to_string(),
+//                     timestamp: Utc::now(),
+//                 }))
+//             } else if error_msg.contains("not active") {
+//                 Ok(create_error_response(
+//                     "ChannelInactive",
+//                     "Channel is not active"
+//                 ))
+//             } else if error_msg.contains("Insufficient balance") {
+//                 Ok(create_error_response(
+//                     "InsufficientBalance",
+//                     &error_msg
+//                 ))
+//             } else if error_msg.contains("not a party") {
+//                 Ok(HttpResponse::Forbidden().json(ErrorResponse {
+//                     error: "Unauthorized".to_string(),
+//                     message: error_msg,
+//                     timestamp: Utc::now(),
+//                 }))
+//             } else {
+//                 Ok(create_error_response(
+//                     "PaymentError",
+//                     &format!("Failed to process payment: {}", error_msg)
+//                 ))
+//             }
+//         }
+//     }
+// }
+
 async fn send_payment(
     pool: web::Data<PgPool>,
     channel_id: web::Path<String>,
@@ -255,9 +406,10 @@ async fn send_payment(
     }
     
     // Use database function for atomic payment processing
+    // Cast to text and mark as non-null with "result!"
     let result = sqlx::query!(
         r#"
-        SELECT process_channel_payment($1, $2, $3, $4, $5) as result
+        SELECT process_channel_payment($1, $2, $3, $4, $5)::text as "result!"
         "#,
         channel_id.as_str(),
         &request.from_paymail,
@@ -272,53 +424,72 @@ async fn send_payment(
         Ok(record) => {
             let processing_time = start_time.elapsed().as_millis() as i32;
             
-            if let Some(json) = record.result {
-                let payment_data: serde_json::Value = json;
-                
-                // Update processing time
-                if let Some(payment_id) = payment_data.get("payment_id").and_then(|v| v.as_str()) {
-                    let _ = sqlx::query!(
-                        "UPDATE channel_payments SET processing_time_ms = $1 WHERE id = $2",
-                        processing_time,
-                        Uuid::parse_str(payment_id).ok()
-                    )
-                    .execute(pool.get_ref())
-                    .await;
+            // Parse the JSON string directly (no Option check needed with !)
+            let payment_data: serde_json::Value = match serde_json::from_str(&record.result) {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("JSON parse error: {} - Raw: {}", e, record.result);
+                    return Ok(create_error_response(
+                        "ProcessingError",
+                        "Invalid response from database"
+                    ));
                 }
-                
-                Ok(HttpResponse::Ok().json(PaymentResponse {
-                    payment_id: Uuid::parse_str(
-                        payment_data.get("payment_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                    ).unwrap_or_else(|_| Uuid::new_v4()),
-                    channel_id: channel_id.to_string(),
-                    from_paymail: request.from_paymail.clone(),
-                    to_paymail: request.to_paymail.clone(),
-                    amount_satoshis: request.amount_satoshis,
-                    sequence_number: payment_data.get("sequence_number")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0),
-                    balance_a: payment_data.get("balance_a")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0),
-                    balance_b: payment_data.get("balance_b")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0),
-                    created_at: Utc::now(),
-                    processing_time_ms: processing_time,
-                }))
-            } else {
-                Ok(create_error_response(
+            };
+            
+            // Check success flag
+            if !payment_data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                return Ok(create_error_response(
                     "ProcessingError",
                     "Payment processing failed"
-                ))
+                ));
             }
+            
+            // Extract payment ID
+            let payment_id_str = payment_data
+                .get("payment_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            
+            let payment_id = Uuid::parse_str(payment_id_str)
+                .unwrap_or_else(|_| Uuid::new_v4());
+            
+            // Update processing time
+            let _ = sqlx::query!(
+                "UPDATE channel_payments SET processing_time_ms = $1 WHERE id = $2",
+                processing_time,
+                payment_id
+            )
+            .execute(pool.get_ref())
+            .await;
+            
+            // Return success response
+            Ok(HttpResponse::Ok().json(PaymentResponse {
+                payment_id,
+                channel_id: channel_id.to_string(),
+                from_paymail: request.from_paymail.clone(),
+                to_paymail: request.to_paymail.clone(),
+                amount_satoshis: request.amount_satoshis,
+                sequence_number: payment_data
+                    .get("sequence_number")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                balance_a: payment_data
+                    .get("balance_a")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                balance_b: payment_data
+                    .get("balance_b")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                created_at: Utc::now(),
+                processing_time_ms: processing_time,
+            }))
         }
         Err(e) => {
             eprintln!("Payment error: {}", e);
             let error_msg = e.to_string();
             
+            // Handle specific error cases
             if error_msg.contains("not found") {
                 Ok(HttpResponse::NotFound().json(ErrorResponse {
                     error: "ChannelNotFound".to_string(),
