@@ -56,6 +56,11 @@ SKIPPED_TESTS=0
 START_TIME=$(date +%s)
 TEST_RUN_ID=$(date +%s%N | md5sum | cut -c1-8)
 
+# Valid testnet addresses
+TEST_VALID_ADDR_1="mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef"
+TEST_VALID_ADDR_2="n3GNqMveyvaPvUbH469vDRadqpJMPc84JA"
+TEST_VALID_ADDR_3="mqMi3XYqsPvBWtrJTk8euPWDVmFTZ5jHuK"
+
 # Test artifacts (for cleanup)
 declare -a TEST_PAYMAILS=()
 declare -a TEST_CHANNELS=()
@@ -482,13 +487,49 @@ test_blockchain_monitor() {
 # Test Suite 2: Transaction Builder Service (54 tests)
 ################################################################################
 
+# test_transaction_builder() {
+#     section "TRANSACTION BUILDER SERVICE TESTS (54 tests)"
+    
+#     subsection "Basic Transaction Building (15 tests)"
+    
+#     # Test 43: Health check
+#     # ((TOTAL_TESTS++))
+#     TOTAL_TESTS=$((TOTAL_TESTS + 1))
+#     local health=$(curl -sf "$TX_BUILDER/health" | jq -r '.status // empty')
+#     if [ "$health" == "healthy" ]; then
+#         success "Test 43: Health check passed"
+#     else
+#         fail "Test 43: Health check" "Status: $health"
+#     fi
+    
+#     # Test 44-48: P2PKH transactions
+#     for i in {44..48}; do
+#         ((TOTAL_TESTS++))
+#         local from_addr="n$(openssl rand -hex 16)"
+#         local to_addr="n$(openssl rand -hex 16)"
+#         local tx_response=$(curl -sf -X POST "$TX_BUILDER/tx/build/p2pkh" \
+#             -H "Content-Type: application/json" \
+#             -d "{
+#                 \"from_address\": \"$from_addr\",
+#                 \"to_address\": \"$to_addr\",
+#                 \"amount_satoshis\": 10000,
+#                 \"fee_per_byte\": 50
+#             }" 2>/dev/null || echo "{}")
+        
+#         local tx_hex=$(echo "$tx_response" | jq -r '.tx_hex // empty')
+#         if [ -n "$tx_hex" ]; then
+#             success "Test $i: Build P2PKH transaction"
+#         else
+#             fail "Test $i: Build P2PKH" "No tx_hex returned"
+#         fi
+#     done
+
 test_transaction_builder() {
     section "TRANSACTION BUILDER SERVICE TESTS (54 tests)"
     
     subsection "Basic Transaction Building (15 tests)"
     
     # Test 43: Health check
-    # ((TOTAL_TESTS++))
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
     local health=$(curl -sf "$TX_BUILDER/health" | jq -r '.status // empty')
     if [ "$health" == "healthy" ]; then
@@ -497,11 +538,14 @@ test_transaction_builder() {
         fail "Test 43: Health check" "Status: $health"
     fi
     
-    # Test 44-48: P2PKH transactions
+    # Test 44-48: P2PKH transactions with VALID addresses
     for i in {44..48}; do
-        ((TOTAL_TESTS++))
-        local from_addr="n$(openssl rand -hex 16)"
-        local to_addr="n$(openssl rand -hex 16)"
+        TOTAL_TESTS=$((TOTAL_TESTS + 1))
+        
+        # Use valid testnet addresses
+        local from_addr="$TEST_VALID_ADDR_1"
+        local to_addr="$TEST_VALID_ADDR_2"
+        
         local tx_response=$(curl -sf -X POST "$TX_BUILDER/tx/build/p2pkh" \
             -H "Content-Type: application/json" \
             -d "{
@@ -515,7 +559,8 @@ test_transaction_builder() {
         if [ -n "$tx_hex" ]; then
             success "Test $i: Build P2PKH transaction"
         else
-            fail "Test $i: Build P2PKH" "No tx_hex returned"
+            local error=$(echo "$tx_response" | jq -r '.error // .details // "Unknown error"')
+            fail "Test $i: Build P2PKH" "Error: $error"
         fi
     done
     
@@ -541,43 +586,104 @@ test_transaction_builder() {
     done
     
     # Test 54-58: Channel funding transactions
+    # for i in {54..58}; do
+    #     ((TOTAL_TESTS++))
+    #     local funding_response=$(curl -sf -X POST "$TX_BUILDER/tx/build/funding" \
+    #         -H "Content-Type: application/json" \
+    #         -d "{
+    #             \"party_a\": {
+    #                 \"address\": \"n$(openssl rand -hex 16)\",
+    #                 \"amount\": 100000
+    #             },
+    #             \"party_b\": {
+    #                 \"address\": \"n$(openssl rand -hex 16)\",
+    #                 \"amount\": 100000
+    #             },
+    #             \"multisig_address\": \"2N$(openssl rand -hex 16)\",
+    #             \"fee_per_byte\": 50
+    #         }" 2>/dev/null || echo "{}")
+        
+    #     if echo "$funding_response" | jq -e '.tx_hex' > /dev/null 2>&1; then
+    #         success "Test $i: Build funding transaction"
+    #     else
+    #         fail "Test $i: Build funding TX" "Invalid response"
+    #     fi
+    # done
+
     for i in {54..58}; do
-        ((TOTAL_TESTS++))
+        TOTAL_TESTS=$((TOTAL_TESTS + 1))
+        
         local funding_response=$(curl -sf -X POST "$TX_BUILDER/tx/build/funding" \
             -H "Content-Type: application/json" \
             -d "{
                 \"party_a\": {
-                    \"address\": \"n$(openssl rand -hex 16)\",
-                    \"amount\": 100000
+                    \"address\": \"$TEST_VALID_ADDR_1\",
+                    \"amount\": 50000,
+                    \"utxos\": [{
+                        \"txid\": \"$(openssl rand -hex 32)\",
+                        \"vout\": 0,
+                        \"satoshis\": 60000
+                    }]
                 },
                 \"party_b\": {
-                    \"address\": \"n$(openssl rand -hex 16)\",
-                    \"amount\": 100000
+                    \"address\": \"$TEST_VALID_ADDR_2\",
+                    \"amount\": 50000,
+                    \"utxos\": [{
+                        \"txid\": \"$(openssl rand -hex 32)\",
+                        \"vout\": 0,
+                        \"satoshis\": 60000
+                    }]
                 },
-                \"multisig_address\": \"2N$(openssl rand -hex 16)\",
+                \"multisig_address\": \"2N8hwP1WmJrFF5QWABn38y63uYLhnJYJYTF\",
                 \"fee_per_byte\": 50
             }" 2>/dev/null || echo "{}")
         
         if echo "$funding_response" | jq -e '.tx_hex' > /dev/null 2>&1; then
             success "Test $i: Build funding transaction"
         else
-            fail "Test $i: Build funding TX" "Invalid response"
+            local error=$(echo "$funding_response" | jq -r '.error // .details // "Unknown"')
+            fail "Test $i: Build funding TX" "Error: $error"
         fi
     done
     
     # Test 59-63: Commitment transactions
+    # for i in {59..63}; do
+    #     ((TOTAL_TESTS++))
+    #     local commitment_response=$(curl -sf -X POST "$TX_BUILDER/tx/build/commitment" \
+    #         -H "Content-Type: application/json" \
+    #         -d "{
+    #             \"funding_txid\": \"$(openssl rand -hex 32)\",
+    #             \"funding_output\": 0,
+    #             \"funding_amount\": 200000,
+    #             \"party_a_balance\": 120000,
+    #             \"party_b_balance\": 80000,
+    #             \"party_a_address\": \"n$(openssl rand -hex 16)\",
+    #             \"party_b_address\": \"n$(openssl rand -hex 16)\",
+    #             \"sequence_number\": 1,
+    #             \"timelock_blocks\": 144,
+    #             \"fee_per_byte\": 50
+    #         }" 2>/dev/null || echo "{}")
+        
+    #     if echo "$commitment_response" | jq -e '.tx_hex' > /dev/null 2>&1; then
+    #         success "Test $i: Build commitment transaction"
+    #     else
+    #         fail "Test $i: Build commitment TX" "Invalid response"
+    #     fi
+    # done
+
     for i in {59..63}; do
-        ((TOTAL_TESTS++))
+        TOTAL_TESTS=$((TOTAL_TESTS + 1))
+        
         local commitment_response=$(curl -sf -X POST "$TX_BUILDER/tx/build/commitment" \
             -H "Content-Type: application/json" \
             -d "{
                 \"funding_txid\": \"$(openssl rand -hex 32)\",
                 \"funding_output\": 0,
-                \"funding_amount\": 200000,
-                \"party_a_balance\": 120000,
-                \"party_b_balance\": 80000,
-                \"party_a_address\": \"n$(openssl rand -hex 16)\",
-                \"party_b_address\": \"n$(openssl rand -hex 16)\",
+                \"funding_amount\": 100000,
+                \"party_a_balance\": 45000,
+                \"party_b_balance\": 42000,
+                \"party_a_address\": \"$TEST_VALID_ADDR_1\",
+                \"party_b_address\": \"$TEST_VALID_ADDR_2\",
                 \"sequence_number\": 1,
                 \"timelock_blocks\": 144,
                 \"fee_per_byte\": 50
@@ -586,24 +692,49 @@ test_transaction_builder() {
         if echo "$commitment_response" | jq -e '.tx_hex' > /dev/null 2>&1; then
             success "Test $i: Build commitment transaction"
         else
-            fail "Test $i: Build commitment TX" "Invalid response"
+            local error=$(echo "$commitment_response" | jq -r '.error // .details // "Unknown"')
+            fail "Test $i: Build commitment TX" "Error: $error"
         fi
     done
     
     # Test 64-68: Fee estimation
+    # subsection "Fee Estimation (10 tests)"
+    # for i in {64..68}; do
+    #     ((TOTAL_TESTS++))
+    #     local fee_rate=$((i * 10))
+    #     local fee_estimate=$(curl -sf "$TX_BUILDER/tx/estimate-fee?type=p2pkh&fee_per_byte=$fee_rate" 2>/dev/null || echo '{"fee_satoshis": 0}')
+    #     local estimated_fee=$(echo "$fee_estimate" | jq -r '.fee_satoshis // 0')
+        
+    #     if [ "$estimated_fee" -gt 0 ]; then
+    #         success "Test $i: Fee estimation at $fee_rate sat/byte ($estimated_fee sats)"
+    #     else
+    #         fail "Test $i: Fee estimation" "Invalid fee"
+    #     fi
+    # done
+
     subsection "Fee Estimation (10 tests)"
     for i in {64..68}; do
-        ((TOTAL_TESTS++))
+        TOTAL_TESTS=$((TOTAL_TESTS + 1))
         local fee_rate=$((i * 10))
-        local fee_estimate=$(curl -sf "$TX_BUILDER/tx/estimate-fee?type=p2pkh&fee_per_byte=$fee_rate" 2>/dev/null || echo '{"fee_satoshis": 0}')
+        
+        # Use POST with JSON body (not GET with query params)
+        local fee_estimate=$(curl -sf -X POST "$TX_BUILDER/tx/estimate-fee" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"tx_type\": \"p2pkh\",
+                \"input_count\": 1,
+                \"output_count\": 2,
+                \"fee_per_byte\": $fee_rate
+            }" 2>/dev/null || echo '{"fee_satoshis": 0}')
+        
         local estimated_fee=$(echo "$fee_estimate" | jq -r '.fee_satoshis // 0')
         
         if [ "$estimated_fee" -gt 0 ]; then
             success "Test $i: Fee estimation at $fee_rate sat/byte ($estimated_fee sats)"
         else
-            fail "Test $i: Fee estimation" "Invalid fee"
+            fail "Test $i: Fee estimation" "Invalid fee: $estimated_fee"
         fi
-    done
+    done    
     
     # Test 69-73: UTXO selection
     for i in {69..73}; do

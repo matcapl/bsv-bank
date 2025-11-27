@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use sha2::{Sha256, Digest};
 use ripemd::Ripemd160;
+use std::collections::HashMap; // new addition?
 
 // ============================================================================
 // Configuration
@@ -89,58 +90,58 @@ impl Transaction {
         });
     }
     
-    fn serialize(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+    // fn serialize(&self) -> Vec<u8> {
+    //     let mut bytes = Vec::new();
         
-        // Version
-        bytes.extend_from_slice(&self.version.to_le_bytes());
+    //     // Version
+    //     bytes.extend_from_slice(&self.version.to_le_bytes());
         
-        // Input count
-        bytes.push(self.inputs.len() as u8);
+    //     // Input count
+    //     bytes.push(self.inputs.len() as u8);
         
-        // Inputs
-        for input in &self.inputs {
-            // Previous output (txid + vout)
-            bytes.extend_from_slice(&hex::decode(&input.txid).unwrap_or_default());
-            bytes.extend_from_slice(&input.vout.to_le_bytes());
+    //     // Inputs
+    //     for input in &self.inputs {
+    //         // Previous output (txid + vout)
+    //         bytes.extend_from_slice(&hex::decode(&input.txid).unwrap_or_default());
+    //         bytes.extend_from_slice(&input.vout.to_le_bytes());
             
-            // Script length + script
-            bytes.push(input.script_sig.len() as u8);
-            bytes.extend_from_slice(&input.script_sig);
+    //         // Script length + script
+    //         bytes.push(input.script_sig.len() as u8);
+    //         bytes.extend_from_slice(&input.script_sig);
             
-            // Sequence
-            bytes.extend_from_slice(&input.sequence.to_le_bytes());
-        }
+    //         // Sequence
+    //         bytes.extend_from_slice(&input.sequence.to_le_bytes());
+    //     }
         
-        // Output count
-        bytes.push(self.outputs.len() as u8);
+    //     // Output count
+    //     bytes.push(self.outputs.len() as u8);
         
-        // Outputs
-        for output in &self.outputs {
-            // Value
-            bytes.extend_from_slice(&output.value.to_le_bytes());
+    //     // Outputs
+    //     for output in &self.outputs {
+    //         // Value
+    //         bytes.extend_from_slice(&output.value.to_le_bytes());
             
-            // Script length + script
-            bytes.push(output.script_pubkey.len() as u8);
-            bytes.extend_from_slice(&output.script_pubkey);
-        }
+    //         // Script length + script
+    //         bytes.push(output.script_pubkey.len() as u8);
+    //         bytes.extend_from_slice(&output.script_pubkey);
+    //     }
         
-        // Locktime
-        bytes.extend_from_slice(&self.locktime.to_le_bytes());
+    //     // Locktime
+    //     bytes.extend_from_slice(&self.locktime.to_le_bytes());
         
-        bytes
-    }
+    //     bytes
+    // }
     
     fn to_hex(&self) -> String {
         hex::encode(self.serialize())
     }
     
-    fn calculate_txid(&self) -> String {
-        let serialized = self.serialize();
-        let hash1 = Sha256::digest(&serialized);
-        let hash2 = Sha256::digest(&hash1);
-        hex::encode(hash2)
-    }
+    // fn calculate_txid(&self) -> String {
+    //     let serialized = self.serialize();
+    //     let hash1 = Sha256::digest(&serialized);
+    //     let hash2 = Sha256::digest(&hash1);
+    //     hex::encode(hash2)
+    // }
     
     fn calculate_size(&self) -> usize {
         self.serialize().len()
@@ -148,6 +149,68 @@ impl Transaction {
     
     fn estimate_fee(&self, fee_per_byte: u64) -> u64 {
         (self.calculate_size() as u64) * fee_per_byte
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        
+        // Version (4 bytes, little endian)
+        bytes.extend_from_slice(&self.version.to_le_bytes());
+        
+        // Input count (varint - simplified for count < 253)
+        bytes.push(self.inputs.len() as u8);
+        
+        // Inputs
+        for input in &self.inputs {
+            // Previous output TXID (32 bytes) - MUST BE REVERSED
+            let txid_bytes = hex::decode(&input.txid).unwrap_or_else(|_| vec![0u8; 32]);
+            let mut reversed_txid = txid_bytes;
+            reversed_txid.reverse(); // Bitcoin uses reversed byte order for TXIDs
+            bytes.extend_from_slice(&reversed_txid);
+            
+            // Previous output index (4 bytes, little endian)
+            bytes.extend_from_slice(&input.vout.to_le_bytes());
+            
+            // Script length (varint)
+            bytes.push(input.script_sig.len() as u8);
+            
+            // Script
+            bytes.extend_from_slice(&input.script_sig);
+            
+            // Sequence (4 bytes, little endian)
+            bytes.extend_from_slice(&input.sequence.to_le_bytes());
+        }
+        
+        // Output count (varint)
+        bytes.push(self.outputs.len() as u8);
+        
+        // Outputs
+        for output in &self.outputs {
+            // Value (8 bytes, little endian)
+            bytes.extend_from_slice(&output.value.to_le_bytes());
+            
+            // Script length (varint)
+            bytes.push(output.script_pubkey.len() as u8);
+            
+            // Script
+            bytes.extend_from_slice(&output.script_pubkey);
+        }
+        
+        // Locktime (4 bytes, little endian)
+        bytes.extend_from_slice(&self.locktime.to_le_bytes());
+        
+        bytes
+    }
+    
+    fn calculate_txid(&self) -> String {
+        let serialized = self.serialize();
+        let hash1 = Sha256::digest(&serialized);
+        let hash2 = Sha256::digest(&hash1);
+        
+        // TXID is displayed in reversed byte order
+        let mut txid_bytes = hash2.to_vec();
+        txid_bytes.reverse();
+        hex::encode(txid_bytes)
     }
 }
 
@@ -395,30 +458,101 @@ struct SelectUtxosResponse {
 // Transaction Building Logic
 // ============================================================================
 
+// fn build_p2pkh_transaction(req: BuildP2PKHRequest, fee_per_byte: u64) -> Result<Transaction, String> {
+//     let mut tx = Transaction::new();
+    
+//     // Decode addresses
+//     let from_hash = AddressUtils::decode_address(&req.from_address)?;
+//     let to_hash = AddressUtils::decode_address(&req.to_address)?;
+    
+//     // Calculate required input amount (output + estimated fee)
+//     let estimated_size = 250; // Rough estimate for 1-in-2-out transaction
+//     let estimated_fee = (estimated_size as u64) * fee_per_byte;
+//     let total_needed = req.amount_satoshis + estimated_fee;
+    
+//     // Select UTXOs (simplified - use provided or mock)
+//     let utxos = req.utxos.unwrap_or_else(|| {
+//         vec![UtxoInput {
+//             txid: format!("{:064x}", 0),
+//             vout: 0,
+//             satoshis: total_needed + 10000, // Add buffer
+//         }]
+//     });
+    
+//     let mut total_input = 0u64;
+//     for utxo in &utxos {
+//         tx.add_input(utxo.txid.clone(), utxo.vout, utxo.satoshis);
+//         total_input += utxo.satoshis;
+        
+//         if total_input >= total_needed {
+//             break;
+//         }
+//     }
+    
+//     if total_input < total_needed {
+//         return Err("Insufficient funds".to_string());
+//     }
+    
+//     // Calculate actual fee
+//     let actual_fee = tx.estimate_fee(fee_per_byte);
+    
+//     // Add output to recipient
+//     let to_script = ScriptBuilder::p2pkh(&to_hash);
+//     tx.add_output(req.amount_satoshis, to_script);
+    
+//     // Add change output if needed
+//     let change = total_input.saturating_sub(req.amount_satoshis + actual_fee);
+//     if change > 546 { // Dust threshold
+//         let from_script = ScriptBuilder::p2pkh(&from_hash);
+//         tx.add_output(change, from_script);
+//     }
+    
+//     Ok(tx)
+// }
+
 fn build_p2pkh_transaction(req: BuildP2PKHRequest, fee_per_byte: u64) -> Result<Transaction, String> {
     let mut tx = Transaction::new();
     
-    // Decode addresses
-    let from_hash = AddressUtils::decode_address(&req.from_address)?;
-    let to_hash = AddressUtils::decode_address(&req.to_address)?;
+    // Decode addresses to get pubkey hashes
+    let to_hash = AddressUtils::decode_address(&req.to_address)
+        .map_err(|e| format!("Invalid to_address: {}", e))?;
+    let from_hash = AddressUtils::decode_address(&req.from_address)
+        .map_err(|e| format!("Invalid from_address: {}", e))?;
     
-    // Calculate required input amount (output + estimated fee)
-    let estimated_size = 250; // Rough estimate for 1-in-2-out transaction
+    // Get UTXOs - use provided or create mock for testing
+    let utxos = if let Some(utxos) = req.utxos {
+        if utxos.is_empty() {
+            return Err("No UTXOs provided".to_string());
+        }
+        utxos
+    } else {
+        // Create a mock UTXO with sufficient funds for testing
+        // In production, this should query the blockchain
+        vec![UtxoInput {
+            txid: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            vout: 0,
+            satoshis: req.amount_satoshis + 100000, // Ensure enough for fees
+        }]
+    };
+    
+    // Estimate transaction size for fee calculation
+    // Size = 10 (version+locktime) + 1 (input count) + inputs + 1 (output count) + outputs
+    // Each input ≈ 148 bytes (32 txid + 4 vout + 1 script_len + ~107 script + 4 sequence)
+    // Each output ≈ 34 bytes (8 value + 1 script_len + 25 script)
+    let estimated_inputs = 1; // Start with 1 input
+    let estimated_outputs = 2; // payment + change
+    let estimated_size = 10 + 1 + (estimated_inputs * 148) + 1 + (estimated_outputs * 34);
     let estimated_fee = (estimated_size as u64) * fee_per_byte;
+    
+    // Calculate total needed including fee
     let total_needed = req.amount_satoshis + estimated_fee;
     
-    // Select UTXOs (simplified - use provided or mock)
-    let utxos = req.utxos.unwrap_or_else(|| {
-        vec![UtxoInput {
-            txid: format!("{:064x}", 0),
-            vout: 0,
-            satoshis: total_needed + 10000, // Add buffer
-        }]
-    });
-    
+    // Select UTXOs to cover the amount
     let mut total_input = 0u64;
-    for utxo in &utxos {
-        tx.add_input(utxo.txid.clone(), utxo.vout, utxo.satoshis);
+    let mut selected_utxos = Vec::new();
+    
+    for utxo in utxos {
+        selected_utxos.push(utxo.clone());
         total_input += utxo.satoshis;
         
         if total_input >= total_needed {
@@ -427,25 +561,72 @@ fn build_p2pkh_transaction(req: BuildP2PKHRequest, fee_per_byte: u64) -> Result<
     }
     
     if total_input < total_needed {
-        return Err("Insufficient funds".to_string());
+        return Err(format!(
+            "Insufficient funds: need {} sats, have {} sats",
+            total_needed, total_input
+        ));
     }
     
-    // Calculate actual fee
-    let actual_fee = tx.estimate_fee(fee_per_byte);
+    // Add inputs to transaction
+    for utxo in &selected_utxos {
+        tx.add_input(utxo.txid.clone(), utxo.vout, utxo.satoshis);
+    }
+    
+    // Recalculate fee based on actual transaction structure
+    let actual_size_no_change = 10 + 1 + (selected_utxos.len() * 148) + 1 + (1 * 34);
+    let fee_no_change = (actual_size_no_change as u64) * fee_per_byte;
+    
+    let actual_size_with_change = 10 + 1 + (selected_utxos.len() * 148) + 1 + (2 * 34);
+    let fee_with_change = (actual_size_with_change as u64) * fee_per_byte;
     
     // Add output to recipient
     let to_script = ScriptBuilder::p2pkh(&to_hash);
     tx.add_output(req.amount_satoshis, to_script);
     
-    // Add change output if needed
-    let change = total_input.saturating_sub(req.amount_satoshis + actual_fee);
-    if change > 546 { // Dust threshold
+    // Calculate change
+    let change_without_change_output = total_input.saturating_sub(req.amount_satoshis + fee_no_change);
+    let change_with_change_output = total_input.saturating_sub(req.amount_satoshis + fee_with_change);
+    
+    // Add change output if it's above dust threshold (546 sats)
+    const DUST_THRESHOLD: u64 = 546;
+    if change_with_change_output > DUST_THRESHOLD {
         let from_script = ScriptBuilder::p2pkh(&from_hash);
-        tx.add_output(change, from_script);
+        tx.add_output(change_with_change_output, from_script);
+    } else if change_without_change_output > 0 {
+        // If change is too small, it goes to miners as additional fee
+        // This is fine - just don't add the output
     }
     
     Ok(tx)
 }
+
+// fn build_funding_transaction(req: BuildFundingRequest, fee_per_byte: u64) -> Result<Transaction, String> {
+//     let mut tx = Transaction::new();
+    
+//     // Get UTXOs for both parties
+//     let utxos_a = req.party_a.utxos.ok_or("Party A UTXOs required")?;
+//     let utxos_b = req.party_b.utxos.ok_or("Party B UTXOs required")?;
+    
+//     // Add inputs from both parties
+//     for utxo in utxos_a {
+//         tx.add_input(utxo.txid, utxo.vout, utxo.satoshis);
+//     }
+//     for utxo in utxos_b {
+//         tx.add_input(utxo.txid, utxo.vout, utxo.satoshis);
+//     }
+    
+//     // Calculate fee
+//     let fee = tx.estimate_fee(fee_per_byte);
+    
+//     // Add output to multisig address
+//     let multisig_hash = AddressUtils::decode_address(&req.multisig_address)?;
+//     let multisig_script = ScriptBuilder::p2sh(&multisig_hash);
+    
+//     let total_funding = req.party_a.amount + req.party_b.amount;
+//     tx.add_output(total_funding - fee, multisig_script);
+    
+//     Ok(tx)
+// }
 
 fn build_funding_transaction(req: BuildFundingRequest, fee_per_byte: u64) -> Result<Transaction, String> {
     let mut tx = Transaction::new();
@@ -454,71 +635,199 @@ fn build_funding_transaction(req: BuildFundingRequest, fee_per_byte: u64) -> Res
     let utxos_a = req.party_a.utxos.ok_or("Party A UTXOs required")?;
     let utxos_b = req.party_b.utxos.ok_or("Party B UTXOs required")?;
     
-    // Add inputs from both parties
-    for utxo in utxos_a {
-        tx.add_input(utxo.txid, utxo.vout, utxo.satoshis);
-    }
-    for utxo in utxos_b {
-        tx.add_input(utxo.txid, utxo.vout, utxo.satoshis);
+    if utxos_a.is_empty() || utxos_b.is_empty() {
+        return Err("Both parties must provide UTXOs".to_string());
     }
     
-    // Calculate fee
-    let fee = tx.estimate_fee(fee_per_byte);
+    // Add inputs from both parties
+    for utxo in &utxos_a {
+        tx.add_input(utxo.txid.clone(), utxo.vout, utxo.satoshis);
+    }
+    for utxo in &utxos_b {
+        tx.add_input(utxo.txid.clone(), utxo.vout, utxo.satoshis);
+    }
+    
+    // Estimate fee based on transaction structure
+    // 1 output to multisig address
+    let estimated_size = 10 + 1 + ((utxos_a.len() + utxos_b.len()) * 148) + 1 + (1 * 34);
+    let estimated_fee = (estimated_size as u64) * fee_per_byte;
     
     // Add output to multisig address
     let multisig_hash = AddressUtils::decode_address(&req.multisig_address)?;
     let multisig_script = ScriptBuilder::p2sh(&multisig_hash);
     
     let total_funding = req.party_a.amount + req.party_b.amount;
-    tx.add_output(total_funding - fee, multisig_script);
+    
+    if total_funding <= estimated_fee {
+        return Err("Funding amount too small to cover fees".to_string());
+    }
+    
+    tx.add_output(total_funding - estimated_fee, multisig_script);
     
     Ok(tx)
 }
+
+// fn build_commitment_transaction(req: BuildCommitmentRequest, fee_per_byte: u64) -> Result<Transaction, String> {
+//     let mut tx = Transaction::new();
+    
+//     // Add input from funding transaction
+//     tx.add_input(req.funding_txid, req.funding_output, req.funding_amount);
+    
+//     // Set sequence number for this commitment
+//     if !tx.inputs.is_empty() {
+//         tx.inputs[0].sequence = req.sequence_number;
+//     }
+    
+//     // Calculate fee
+//     let fee = tx.estimate_fee(fee_per_byte);
+    
+//     // Add output to party A with timelock
+//     let party_a_hash = AddressUtils::decode_address(&req.party_a_address)?;
+//     let party_a_script = ScriptBuilder::checklocktimeverify(req.timelock_blocks, &party_a_hash);
+//     tx.add_output(req.party_a_balance, party_a_script);
+    
+//     // Add output to party B (immediate spend)
+//     let party_b_hash = AddressUtils::decode_address(&req.party_b_address)?;
+//     let party_b_script = ScriptBuilder::p2pkh(&party_b_hash);
+//     tx.add_output(req.party_b_balance - fee, party_b_script);
+    
+//     Ok(tx)
+// }
+
+// fn build_commitment_transaction(req: BuildCommitmentRequest, fee_per_byte: u64) -> Result<Transaction, String> {
+//     let mut tx = Transaction::new();
+    
+//     // Add input from funding transaction
+//     tx.add_input(req.funding_txid.clone(), req.funding_output, req.funding_amount);
+    
+//     // Set sequence number for this commitment
+//     if !tx.inputs.is_empty() {
+//         tx.inputs[0].sequence = req.sequence_number;
+//     }
+    
+//     // Validate balances
+//     if req.party_a_balance + req.party_b_balance > req.funding_amount {
+//         return Err("Combined balances exceed funding amount".to_string());
+//     }
+    
+//     // Decode addresses
+//     let party_a_hash = AddressUtils::decode_address(&req.party_a_address)?;
+//     let party_b_hash = AddressUtils::decode_address(&req.party_b_address)?;
+    
+//     // Build scripts
+//     let party_a_script = ScriptBuilder::checklocktimeverify(req.timelock_blocks, &party_a_hash);
+//     let party_b_script = ScriptBuilder::p2pkh(&party_b_hash);
+    
+//     // Estimate fee (2 outputs: one with timelock, one P2PKH)
+//     let estimated_size = 10 + 1 + (1 * 148) + 1 + (2 * 50); // 50 bytes per output (timelock is larger)
+//     let estimated_fee = (estimated_size as u64) * fee_per_byte;
+    
+//     if req.party_a_balance + req.party_b_balance + estimated_fee > req.funding_amount {
+//         return Err("Insufficient funding for balances + fees".to_string());
+//     }
+    
+//     // Add outputs - party A with timelock
+//     tx.add_output(req.party_a_balance, party_a_script);
+    
+//     // Add output for party B (subtract fee from their balance)
+//     if req.party_b_balance < estimated_fee {
+//         return Err("Party B balance too small to cover fees".to_string());
+//     }
+//     tx.add_output(req.party_b_balance - estimated_fee, party_b_script);
+    
+//     Ok(tx)
+// }
 
 fn build_commitment_transaction(req: BuildCommitmentRequest, fee_per_byte: u64) -> Result<Transaction, String> {
     let mut tx = Transaction::new();
     
     // Add input from funding transaction
-    tx.add_input(req.funding_txid, req.funding_output, req.funding_amount);
+    tx.add_input(req.funding_txid.clone(), req.funding_output, req.funding_amount);
     
     // Set sequence number for this commitment
     if !tx.inputs.is_empty() {
         tx.inputs[0].sequence = req.sequence_number;
     }
     
-    // Calculate fee
-    let fee = tx.estimate_fee(fee_per_byte);
+    // Validate balances don't exceed funding
+    if req.party_a_balance + req.party_b_balance > req.funding_amount {
+        return Err("Combined balances exceed funding amount".to_string());
+    }
     
-    // Add output to party A with timelock
+    // Decode addresses
     let party_a_hash = AddressUtils::decode_address(&req.party_a_address)?;
+    let party_b_hash = AddressUtils::decode_address(&req.party_b_address)?;
+    
+    // Build scripts
     let party_a_script = ScriptBuilder::checklocktimeverify(req.timelock_blocks, &party_a_hash);
+    let party_b_script = ScriptBuilder::p2pkh(&party_b_hash);
+    
+    // Add outputs with the balances as provided (fees already accounted for)
+    // Party A with timelock
     tx.add_output(req.party_a_balance, party_a_script);
     
-    // Add output to party B (immediate spend)
-    let party_b_hash = AddressUtils::decode_address(&req.party_b_address)?;
-    let party_b_script = ScriptBuilder::p2pkh(&party_b_hash);
-    tx.add_output(req.party_b_balance - fee, party_b_script);
+    // Party B immediate spend
+    tx.add_output(req.party_b_balance, party_b_script);
     
     Ok(tx)
 }
+
+// fn build_settlement_transaction(req: BuildSettlementRequest, fee_per_byte: u64) -> Result<Transaction, String> {
+//     let mut tx = Transaction::new();
+    
+//     // Add input from funding transaction
+//     tx.add_input(req.funding_txid, req.funding_output, req.funding_amount);
+    
+//     // Calculate fee
+//     let fee = tx.estimate_fee(fee_per_byte);
+    
+//     // Add outputs for final balances
+//     let party_a_hash = AddressUtils::decode_address(&req.party_a_address)?;
+//     let party_a_script = ScriptBuilder::p2pkh(&party_a_hash);
+//     tx.add_output(req.party_a_balance, party_a_script);
+    
+//     let party_b_hash = AddressUtils::decode_address(&req.party_b_address)?;
+//     let party_b_script = ScriptBuilder::p2pkh(&party_b_hash);
+//     tx.add_output(req.party_b_balance - fee, party_b_script);
+    
+//     Ok(tx)
+// }
 
 fn build_settlement_transaction(req: BuildSettlementRequest, fee_per_byte: u64) -> Result<Transaction, String> {
     let mut tx = Transaction::new();
     
     // Add input from funding transaction
-    tx.add_input(req.funding_txid, req.funding_output, req.funding_amount);
+    tx.add_input(req.funding_txid.clone(), req.funding_output, req.funding_amount);
     
-    // Calculate fee
-    let fee = tx.estimate_fee(fee_per_byte);
+    // Validate balances
+    if req.party_a_balance + req.party_b_balance > req.funding_amount {
+        return Err("Combined balances exceed funding amount".to_string());
+    }
     
-    // Add outputs for final balances
+    // Decode addresses
     let party_a_hash = AddressUtils::decode_address(&req.party_a_address)?;
+    let party_b_hash = AddressUtils::decode_address(&req.party_b_address)?;
+    
+    // Build scripts
     let party_a_script = ScriptBuilder::p2pkh(&party_a_hash);
+    let party_b_script = ScriptBuilder::p2pkh(&party_b_hash);
+    
+    // Estimate fee (2 P2PKH outputs)
+    let estimated_size = 10 + 1 + (1 * 148) + 1 + (2 * 34);
+    let estimated_fee = (estimated_size as u64) * fee_per_byte;
+    
+    if req.party_a_balance + req.party_b_balance + estimated_fee > req.funding_amount {
+        return Err("Insufficient funding for balances + fees".to_string());
+    }
+    
+    // Add outputs - split fee between both parties proportionally
+    // Or deduct from party B as in commitment
     tx.add_output(req.party_a_balance, party_a_script);
     
-    let party_b_hash = AddressUtils::decode_address(&req.party_b_address)?;
-    let party_b_script = ScriptBuilder::p2pkh(&party_b_hash);
-    tx.add_output(req.party_b_balance - fee, party_b_script);
+    if req.party_b_balance < estimated_fee {
+        return Err("Party B balance too small to cover fees".to_string());
+    }
+    tx.add_output(req.party_b_balance - estimated_fee, party_b_script);
     
     Ok(tx)
 }
@@ -575,6 +884,31 @@ async fn health_check(data: web::Data<AppState>) -> Result<HttpResponse> {
     }))
 }
 
+// async fn build_p2pkh(
+//     data: web::Data<AppState>,
+//     req: web::Json<BuildP2PKHRequest>,
+// ) -> Result<HttpResponse> {
+//     let fee_per_byte = req.fee_per_byte.unwrap_or(data.config.default_fee_per_byte);
+    
+//     match build_p2pkh_transaction(req.into_inner(), fee_per_byte) {
+//         Ok(tx) => {
+//             let response = BuildTransactionResponse {
+//                 txid: tx.calculate_txid(),
+//                 tx_hex: tx.to_hex(),
+//                 size_bytes: tx.calculate_size(),
+//                 fee_satoshis: tx.estimate_fee(fee_per_byte),
+//                 inputs: tx.inputs.clone(),
+//                 outputs: tx.outputs.clone(),
+//             };
+//             Ok(HttpResponse::Ok().json(response))
+//         }
+//         Err(e) => Ok(HttpResponse::BadRequest().json(serde_json::json!({
+//             "error": "Failed to build transaction",
+//             "details": e
+//         })))
+//     }
+// }
+
 async fn build_p2pkh(
     data: web::Data<AppState>,
     req: web::Json<BuildP2PKHRequest>,
@@ -583,20 +917,32 @@ async fn build_p2pkh(
     
     match build_p2pkh_transaction(req.into_inner(), fee_per_byte) {
         Ok(tx) => {
+            let tx_hex = tx.to_hex();
+            let txid = tx.calculate_txid();
+            let size_bytes = tx.calculate_size();
+            let fee_satoshis = tx.estimate_fee(fee_per_byte);
+            
+            // Ensure we return the full structure
             let response = BuildTransactionResponse {
-                txid: tx.calculate_txid(),
-                tx_hex: tx.to_hex(),
-                size_bytes: tx.calculate_size(),
-                fee_satoshis: tx.estimate_fee(fee_per_byte),
+                tx_hex,
+                txid,
+                size_bytes,
+                fee_satoshis,
                 inputs: tx.inputs.clone(),
                 outputs: tx.outputs.clone(),
             };
+            
             Ok(HttpResponse::Ok().json(response))
         }
-        Err(e) => Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Failed to build transaction",
-            "details": e
-        })))
+        Err(e) => {
+            // Return structured error that tests can parse
+            Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Failed to build transaction",
+                "details": e,
+                "tx_hex": null,
+                "txid": null
+            })))
+        }
     }
 }
 
@@ -720,6 +1066,37 @@ async fn build_settlement(
     }
 }
 
+// async fn estimate_fee(
+//     data: web::Data<AppState>,
+//     req: web::Json<EstimateFeeRequest>,
+// ) -> Result<HttpResponse> {
+//     let fee_per_byte = req.fee_per_byte.unwrap_or(data.config.default_fee_per_byte);
+    
+//     let estimated_size = match req.tx_type.as_str() {
+//         "p2pkh" => {
+//             let inputs = req.input_count.unwrap_or(1);
+//             let outputs = req.output_count.unwrap_or(2);
+//             148 * inputs + 34 * outputs + 10
+//         }
+//         "multisig" => {
+//             let inputs = req.input_count.unwrap_or(1);
+//             let outputs = req.output_count.unwrap_or(1);
+//             295 * inputs + 34 * outputs + 10
+//         }
+//         "funding" => 500,
+//         "commitment" => 350,
+//         "settlement" => 300,
+//         _ => 250,
+//     };
+    
+//     Ok(HttpResponse::Ok().json(EstimateFeeResponse {
+//         tx_type: req.tx_type.clone(),
+//         estimated_size_bytes: estimated_size,
+//         fee_per_byte,
+//         fee_satoshis: (estimated_size as u64) * fee_per_byte,
+//     }))
+// }
+
 async fn estimate_fee(
     data: web::Data<AppState>,
     req: web::Json<EstimateFeeRequest>,
@@ -730,12 +1107,12 @@ async fn estimate_fee(
         "p2pkh" => {
             let inputs = req.input_count.unwrap_or(1);
             let outputs = req.output_count.unwrap_or(2);
-            148 * inputs + 34 * outputs + 10
+            10 + 1 + (148 * inputs) + 1 + (34 * outputs)
         }
         "multisig" => {
             let inputs = req.input_count.unwrap_or(1);
             let outputs = req.output_count.unwrap_or(1);
-            295 * inputs + 34 * outputs + 10
+            10 + 1 + (295 * inputs) + 1 + (34 * outputs)
         }
         "funding" => 500,
         "commitment" => 350,
@@ -743,12 +1120,17 @@ async fn estimate_fee(
         _ => 250,
     };
     
-    Ok(HttpResponse::Ok().json(EstimateFeeResponse {
+    let fee_satoshis = (estimated_size as u64) * fee_per_byte;
+    
+    // Ensure we return proper structure
+    let response = EstimateFeeResponse {
         tx_type: req.tx_type.clone(),
         estimated_size_bytes: estimated_size,
         fee_per_byte,
-        fee_satoshis: (estimated_size as u64) * fee_per_byte,
-    }))
+        fee_satoshis,
+    };
+    
+    Ok(HttpResponse::Ok().json(response))
 }
 
 async fn select_utxos_handler(
@@ -856,8 +1238,8 @@ async fn main() -> std::io::Result<()> {
             .route("/tx/build/funding", web::post().to(build_funding))
             .route("/tx/build/commitment", web::post().to(build_commitment))
             .route("/tx/build/settlement", web::post().to(build_settlement))
-            // .route("/tx/estimate-fee", web::post().to(estimate_fee))
             .route("/tx/estimate-fee", web::post().to(estimate_fee))
+            // .route("/tx/estimate-fee", web::get().to(estimate_fee))
             .route("/tx/select-utxos", web::post().to(select_utxos_handler))
             .route("/tx/validate", web::post().to(validate_transaction))
     })
