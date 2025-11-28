@@ -1,0 +1,13 @@
+# Time-locked Deposit Script (P2PKH + nLockTime)
+# 
+# Locks funds until maturity_timestamp
+# Can be unlocked with user's signature after maturity
+
+OP_IF
+  # Normal spend path (after maturity)
+  <maturity_timestamp> OP_CHECKLOCKTIMEVERIFY OP_DROP
+  OP_DUP OP_HASH160 <pubkey_hash> OP_EQUALVERIFY OP_CHECKSIG
+OP_ELSE
+  # Emergency withdrawal path (with bank co-signature)
+  OP_2 <user_pubkey> <bank_pubkey> OP_2 OP_CHECKMULTISIG
+OP_ENDIF
