@@ -1,5 +1,8 @@
+// core/deposit-service/src/auth.rs
+
 use serde::{Deserialize, Serialize};
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, errors::Error};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::env;
 
 #[derive(Debug, Serialize, Deserialize)]
