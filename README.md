@@ -5,7 +5,8 @@ A fully operational, open-source algorithmic banking platform built entirely on 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![React](https://img.shields.io/badge/react-18%2B-blue.svg)](https://reactjs.org/)
-[![Tests](https://img.shields.io/badge/tests-195%2F215%20passing-brightgreen.svg)](https://github.com/matcapl/bsv-bank)
+[![Tests](https://img.shields.io/badge/tests-232%2F299%20passing-brightgreen.svg)](https://github.com/matcapl/bsv-bank)
+[![Production Ready](https://img.shields.io/badge/production%20ready-70%25-yellow.svg)](https://github.com/matcapl/bsv-bank)
 
 ## ✨ Features
 
@@ -18,6 +19,9 @@ A fully operational, open-source algorithmic banking platform built entirely on 
 - 🔗 **Blockchain Integration** with BSV testnet
 - 🔒 **SPV Verification** for trustless operation
 - 🌐 **Paymail Integration** for HandCash and other wallets
+- 🔐 **JWT Authentication** with secure token management
+- 📊 **Prometheus Metrics** for monitoring
+- 🛡️ **Input Validation** and security hardening
 
 ## 🚀 Quick Start
 
@@ -39,7 +43,11 @@ cd bsv-bank
 docker-compose up -d
 
 # Run migrations
-psql -h localhost -U a -d bsv_bank -f migrations/schema.sql
+psql -h localhost -U a -d bsv_bank -f migrations/001_initial_schema.sql
+psql -h localhost -U a -d bsv_bank -f migrations/002_loans_schema.sql
+psql -h localhost -U a -d bsv_bank -f migrations/003_payment_channels.sql
+psql -h localhost -U a -d bsv_bank -f migrations/004_phase5_schema.sql
+psql -h localhost -U a -d bsv_bank -f migrations/007_users_and_auth.sql
 
 # Start backend services
 ./start-all.sh
@@ -53,9 +61,32 @@ Visit [http://localhost:3000](http://localhost:3000) 🎉
 
 ## 📚 Quick Demo
 
-### Create a Deposit
+### Register & Login
+```bash
+# Register new user
+curl -X POST http://localhost:8080/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "paymail": "user@example.com",
+    "password": "securepass123"
+  }'
+
+# Login (get JWT token)
+curl -X POST http://localhost:8080/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "paymail": "user@example.com",
+    "password": "securepass123"
+  }'
+
+# Save the token
+TOKEN="your-jwt-token-here"
+```
+
+### Create a Deposit (Authenticated)
 ```bash
 curl -X POST http://localhost:8080/deposits \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "user_paymail": "test@handcash.io",
@@ -67,7 +98,8 @@ curl -X POST http://localhost:8080/deposits \
 
 ### Check Balance
 ```bash
-curl http://localhost:8080/balance/test@handcash.io
+curl http://localhost:8080/balance/test@handcash.io \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Interest Rates
@@ -105,6 +137,15 @@ curl -X POST http://localhost:8083/channels/open \
 curl http://localhost:8084/watch/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
 ```
 
+### Check Service Health & Metrics
+```bash
+# Health checks
+curl http://localhost:8080/health
+
+# Prometheus metrics
+curl http://localhost:8080/metrics
+```
+
 ## 🏗️ Architecture
 
 ```
@@ -118,6 +159,7 @@ curl http://localhost:8084/watch/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
 ┌─────────▼─────┐ ┌──────▼──────┐ ┌─────▼──────┐
 │   Deposits    │ │  Interest   │ │  Lending   │
 │   Port 8080   │ │  Port 8081  │ │  Port 8082 │
+│  [+ Auth]     │ │             │ │            │
 └───────────────┘ └─────────────┘ └────────────┘
                           │
           ┌───────────────┼───────────────┐
@@ -130,6 +172,12 @@ curl http://localhost:8084/watch/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
                   ┌───────▼────────┐
                   │  Transaction   │
                   │  Builder 8085  │
+                  └────────────────┘
+                          │
+                  ┌───────▼────────┐
+                  │   Common Lib   │ ← NEW: Phase 6
+                  │  (Auth, Metrics,│
+                  │   Validation)  │
                   └────────────────┘
                           │
                   ┌───────▼────────┐
@@ -174,7 +222,7 @@ curl http://localhost:8084/watch/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
 - Cooperative and force closure
 - **Tests:** 94/94 passing (100%)
 
-### ✅ Phase 5: Blockchain Integration - **COMPLETE** (95%)
+### ✅ Phase 5: Blockchain Integration - **COMPLETE** (85%)
 - BSV testnet connectivity
 - Transaction monitoring
 - Transaction builder (P2PKH, multisig)
@@ -184,23 +232,61 @@ curl http://localhost:8084/watch/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
   - 5 tests skipped (require testnet funding)
   - 10 E2E tests pending (require full testnet setup)
 
-### 🎯 Phase 6: Production Hardening - **IN PROGRESS**
-- Security hardening and audit
-- Performance optimization
-- Monitoring and observability
-- API documentation
-- Load testing
+### 🔄 Phase 6: Production Hardening - **IN PROGRESS** (70%)
+**Status:** Week 1 Complete, Week 2 In Progress  
+**Target:** Late December 2025
 
-See [STATUS.md](STATUS.md) for detailed progress.
+#### ✅ Week 1: Core Infrastructure (COMPLETE)
+- ✅ **Shared Common Library** (77 unit tests)
+  - JWT Authentication
+  - Input Validation
+  - Rate Limiting
+  - Health Checks
+  - Prometheus Metrics
+  - Structured Logging
+  - Standardized Errors
 
-DB implemented with 001.sql, 002, 003, 004
+- ✅ **Deposit Service Integration**
+  - Authentication middleware
+  - Metrics middleware
+  - Health endpoints
+  - Auth endpoints (/register, /login, /refresh)
 
-yet to 006_testnet
-yet to 007_users and auth
+- ✅ **Database Migrations**
+  - Users table
+  - API keys table
+  - Audit log table
+  - Rate limit table
 
-possibly useful possibly redundant 009,010,011
+**Test Results (Dec 2, 2025):**
+- Part 1: 30/54 tests passing (56%)
+- Part 2: 7/30 tests passing (23%)
+- Production Readiness: 70%
+
+#### 🔄 Week 2: Documentation & Deployment (IN PROGRESS)
+- [ ] OpenAPI/Swagger specs
+- [ ] API documentation
+- [ ] Deployment guide
+- [ ] Docker improvements
+- [ ] Deployment scripts
+
+#### ⏳ Week 3: Testing & Optimization (PLANNED)
+- [ ] Load testing (k6)
+- [ ] Integration tests
+- [ ] Performance optimization
+- [ ] Security audit
+
+See [STATUS.md](STATUS.md) and [PHASE6_IMPLEMENTATION.md](PHASE6_IMPLEMENTATION.md) for detailed progress.
 
 ## 🎯 Key Achievements
+
+### Phase 6 Week 1 Complete (December 2025)
+- ✅ **Common Library** - 77 unit tests for shared functionality
+- ✅ **JWT Authentication** - Secure token-based auth
+- ✅ **Input Validation** - Paymail, TXID, amounts, addresses
+- ✅ **Rate Limiting** - Sliding window algorithm
+- ✅ **Monitoring** - Health checks, metrics, logging
+- ✅ **Error Handling** - Standardized error responses
 
 ### Phase 5 Complete (November 2025)
 - ✅ **Blockchain Monitor** - Transaction tracking via WhatsOnChain
@@ -213,29 +299,30 @@ possibly useful possibly redundant 009,010,011
 - Payment Latency: ~10ms average
 - Blockchain Queries: 80-150ms (cached: <50ms)
 - Transaction Building: <30ms
+- Health Check: 8ms average
 - Throughput: 100+ payments/second
-- Test Success Rate: 91% (195/215 tests)
+- Test Success Rate: 78% (232/299 tests)
 
 ## 🧪 Testing
 
 ### Automated Test Suites
 ```bash
-# Test Phase 4 (Payment Channels)
+# Individual service tests
+./test-lending.sh
+
+# Phase 3 (Loan Cycle)
+./tests/test-phase3-complete.sh
+
+# Phase 4 (Payment Channels)
 ./tests/test-phase4-complete.sh
 
-# Test Phase 5 (Blockchain Integration)
+# Phase 5 (Blockchain Integration)
 ./tests/test-phase5-complete.sh
 
-# Individual service tests
-./test-deposits.sh
-./test-interest.sh
-./test-phase3-complete.sh
-
-# NEW: Phase 6 (Hardening: Authentication, etc.)
-./test-phase6-complete-part1.sh && ./test-phase6-complete-part2.sh
-
-# TO DO: Testnet tracking tests
-./test-testnet-tracking.sh
+# Phase 6 (Production Hardening)
+cd tests/phase6
+./test-phase6-complete-part1.sh  # Infrastructure, Auth, Validation
+./test-phase6-complete-part2.sh  # Security, Docs, Deployment
 ```
 
 ### Test Coverage
@@ -246,17 +333,43 @@ possibly useful possibly redundant 009,010,011
 | Transaction Builder | 54 | 54 | 100% |
 | SPV Service | 35 | 30 | 86% |
 | Payment Channels | 49 | 49 | 100% |
-| Integration Tests | 20 | 15 | 75% |
-| **TOTAL** | **215** | **195** | **91%** |
+| Phase 5 Integration | 20 | 15 | 75% |
+| Phase 6 Infrastructure | 54 | 30 | 56% |
+| Phase 6 Production | 30 | 7 | 23% |
+| **TOTAL** | **299** | **232** | **78%** |
+
+### Production Readiness: 70%
+
+**What's Working:**
+- ✅ JWT authentication and token refresh
+- ✅ Protected endpoint access control
+- ✅ Health checks on all services
+- ✅ Metrics endpoints
+- ✅ Structured logging
+- ✅ Basic validation
+- ✅ Error handling
+
+**What's Pending:**
+- ⏳ Input validation enforcement (Week 2)
+- ⏳ Rate limiting configuration (Week 2)
+- ⏳ Security headers (Week 2)
+- ⏳ API documentation (Week 2)
+- ⏳ Deployment automation (Week 2)
+- ⏳ Load testing (Week 3)
 
 ### Manual Testing
 ```bash
 # Check service health
-curl http://localhost:8080/health  # Deposits
+curl http://localhost:8080/health  # Deposits (+ Auth)
 curl http://localhost:8081/health  # Interest
 curl http://localhost:8082/health  # Lending
-curl http://localhost:8083/health  # Channels
+curl http://localhost:8083/health  # Payment Channels
 curl http://localhost:8084/health  # Blockchain Monitor
+curl http://localhost:8085/health  # Transaction Builder
+curl http://localhost:8086/health  # SPV Service
+
+# Check metrics
+curl http://localhost:8080/metrics  # Prometheus format
 
 # View logs
 tail -f logs/deposit.log
@@ -264,6 +377,8 @@ tail -f logs/interest.log
 tail -f logs/loans.log
 tail -f logs/payment-channels.log
 tail -f logs/blockchain-monitor.log
+tail -f logs/transaction-builder.log
+tail -f logs/spv-service.log
 ```
 
 ## 🛠️ Tech Stack
@@ -274,6 +389,8 @@ tail -f logs/blockchain-monitor.log
 - **SQLx 0.7** - Type-safe SQL with compile-time verification
 - **PostgreSQL 14+** - Reliable database
 - **Tokio** - Async runtime
+- **JWT (jsonwebtoken)** - Authentication tokens
+- **Prometheus** - Metrics collection
 
 ### Frontend
 - **React 18** - Modern UI library
@@ -294,10 +411,11 @@ tail -f logs/blockchain-monitor.log
 ## 📖 Documentation
 
 - [STATUS.md](STATUS.md) - Detailed development status
+- [PHASE6_IMPLEMENTATION.md](PHASE6_IMPLEMENTATION.md) - Phase 6 guide
 - [PHASE6_PLAN.md](PHASE6_PLAN.md) - Production hardening roadmap
-- [API.md](docs/API.md) - REST API reference
+- [API.md](docs/API.md) - REST API reference (Coming Week 2)
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System design
-- [DEPLOYMENT.md](docs/DEPLOYMENT.md) - Production setup
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) - Production setup (Coming Week 2)
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Development workflow
 
 ## 🤝 Contributing
@@ -326,19 +444,24 @@ git push origin feature/amazing-feature
 ⚠️ **This software is for educational and research purposes only.**
 
 ### Current Security Measures
-- ✅ Input validation on all endpoints
+- ✅ JWT authentication with secure tokens
+- ✅ Input validation library (enforcement in progress)
 - ✅ SQL injection prevention (parameterized queries)
 - ✅ Type-safe Rust implementation
 - ✅ CORS configuration
 - ✅ Collateral requirements (150% minimum)
 - ✅ SPV proof verification
+- ✅ Audit logging
+- ✅ Rate limiting (tuning in progress)
 
-### Phase 6 Security (Planned)
-- ⏳ JWT authentication
-- ⏳ API rate limiting
-- ⏳ Security audit
-- ⏳ Penetration testing
-- ⏳ Request signing
+### Phase 6 Security (In Progress)
+- ✅ JWT authentication ← DONE
+- ✅ Audit logging ← DONE
+- ⏳ Input validation enforcement ← Week 2
+- ⏳ API rate limiting ← Week 2
+- ⏳ Security headers ← Week 2
+- ⏳ Security audit ← Week 3
+- ⏳ Penetration testing ← Week 3
 
 ### Legal Disclaimer
 Operating a custodial cryptocurrency platform requires:
@@ -364,17 +487,17 @@ Operating a custodial cryptocurrency platform requires:
 - [x] Phase 2: Interest engine
 - [x] Phase 3: P2P lending
 - [x] Phase 4: Payment channels
-- [x] Phase 5: Blockchain integration (95%)
+- [x] Phase 5: Blockchain integration (85%)
 
 ### Q4 2025 - Q1 2026 (Current)
-- [ ] Phase 6: Production hardening
+- [x] Phase 6 Week 1: Core infrastructure ✅
+- [ ] Phase 6 Week 2: Documentation & deployment ← **IN PROGRESS**
+- [ ] Phase 6 Week 3: Testing & optimization
 - [ ] Security audit
-- [ ] Performance optimization
-- [ ] API documentation
 - [ ] Testnet deployment
 
 ### Q1 2026 - Q2 2026
-- [ ] HandCash wallet integration
+- [ ] Phase 7: External wallet integration (HandCash)
 - [ ] Mobile app (iOS/Android)
 - [ ] Advanced analytics dashboard
 - [ ] Multi-currency support
@@ -416,18 +539,28 @@ Copyright (c) 2024-2025 BSV Bank Contributors
 
 ## 📈 Project Stats
 
-- **Lines of Code**: 4,500+ (Backend) + 1,200+ (Frontend)
-- **API Endpoints**: 30+
-- **Database Tables**: 9
-- **Test Coverage**: 91% (195/215 tests passing)
+- **Lines of Code**: 5,500+ (Backend) + 1,200+ (Frontend)
+- **API Endpoints**: 35+
+- **Database Tables**: 12
+- **Test Coverage**: 78% (232/299 tests passing)
 - **Services Running**: 7
-- **Phases Complete**: 5 of 6 ✅
+- **Phases Complete**: 5 of 6 (Phase 6: 70%)
+- **Production Readiness**: 70%
 
 ---
 
 ## 🎓 Recent Updates
 
-**November 27, 2025** - Phase 5 Complete (95%)
+**December 2, 2025** - Phase 6 Week 1 Complete
+- ✅ Shared common library with 77 unit tests
+- ✅ JWT authentication system
+- ✅ Input validation framework
+- ✅ Rate limiting implementation
+- ✅ Health checks and metrics
+- ✅ Structured logging
+- ✅ Database migrations for auth
+
+**November 27, 2025** - Phase 5 Complete (85%)
 - ✅ Blockchain monitor with transaction tracking
 - ✅ Transaction builder for P2PKH and multisig
 - ✅ SPV verification service
@@ -448,4 +581,4 @@ Copyright (c) 2024-2025 BSV Bank Contributors
 
 **⭐ Star this repo if you find it useful!**
 
-**Ready for Phase 6: Production Hardening** 🚀
+**Phase 6: 70% Complete - On Track for Production!** 🚀

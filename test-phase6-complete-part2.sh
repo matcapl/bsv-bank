@@ -58,21 +58,21 @@ print_test() {
 
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
-    ((PASSED_TESTS++))
-    ((TOTAL_TESTS++))
+    ((PASSED_TESTS = PASSED_TESTS + 1))
+    ((TOTAL_TESTS = TOTAL_TESTS + 1))
 }
 
 print_failure() {
     echo -e "${RED}✗${NC} $1"
     echo "[FAIL] $1" >> "$LOG_FILE"
-    ((FAILED_TESTS++))
-    ((TOTAL_TESTS++))
+    ((FAILED_TESTS = FAILED_TESTS + 1))
+    ((TOTAL_TESTS = TOTAL_TESTS + 1))
 }
 
 print_skip() {
     echo -e "${MAGENTA}⊘${NC} $1"
-    ((SKIPPED_TESTS++))
-    ((TOTAL_TESTS++))
+    ((SKIPPED_TESTS = SKIPPED_TESTS + 1))
+    ((TOTAL_TESTS = TOTAL_TESTS + 1))
 }
 
 print_info() {

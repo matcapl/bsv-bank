@@ -20,6 +20,11 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 BOLD='\033[1m'
 
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+    echo "⚠️  Warning: bash 4.0+ recommended (you have ${BASH_VERSION})"
+    echo "   Some features may not work. Consider: brew install bash"
+fi
+
 # Configuration
 DB_NAME="${POSTGRES_DB:-bsv_bank}"
 DB_USER="${POSTGRES_USER:-a}"
@@ -55,18 +60,18 @@ print_section() {
 
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
-    ((PASSED_CHECKS++))
+    ((PASSED_CHECKS = PASSED_CHECKS + 1))
 }
 
 print_error() {
     echo -e "${RED}✗${NC} $1"
-    ((FAILED_CHECKS++))
+    ((FAILED_CHECKS = FAILED_CHECKS + 1))
     BLOCKING_ISSUES+=("$1")
 }
 
 print_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
-    ((WARNING_COUNT++))
+    ((WARNING_COUNT = WARNING_COUNT + 1))
 }
 
 print_info() {
@@ -75,7 +80,7 @@ print_info() {
 
 print_suggestion() {
     echo -e "${MAGENTA}💡${NC} $1"
-    ((SUGGESTIONS++))
+    ((SUGGESTIONS = SUGGESTIONS + 1))
     SUGGESTIONS_LIST+=("$1")
 }
 
@@ -178,6 +183,75 @@ extract_all_tables_mentioned() {
         grep -ioE "FROM[[:space:]]+[a-z_]+" "$file" | awk '{print $2}'
     } | sort -u | grep -v "^$" | grep -v "TABLE" | grep -v "EXISTS" || true
 }
+
+# # ============================================================================
+# # Fixed Type Normalization Function
+# # ============================================================================
+# normalize_pg_type() {
+#     local type="$1"
+#     type=$(echo "$type" | tr '[:upper:]' '[:lower:]')
+    
+#     # Normalize common PostgreSQL type aliases
+#     type="${type//varchar/character varying}"
+#     type="${type//timestamptz/timestamp with time zone}"
+#     type="${type//timestamp without time zone/timestamp}"
+#     type="${type//int8/bigint}"
+#     type="${type//int4/integer}"
+#     type="${type//int2/smallint}"
+#     type="${type//bool/boolean}"
+    
+#     echo "$type"
+# }
+
+# # ============================================================================
+# # Fixed Index Extraction (skip comments)
+# # ============================================================================
+# extract_indexes() {
+#     local file="$1"
+#     grep -iE "CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX" "$file" | \
+#         grep -v "^[[:space:]]*--" | \
+#         grep -v "^--" | \
+#         sed -E 's/.*CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-z_0-9]+).*/\3/I' | \
+#         grep -v "^$" | \
+#         grep -vE "^(INDEX|IF|NOT|EXISTS|UNIQUE|CREATE)$" | \
+#         sort -u || true
+# }
+
+# # ============================================================================
+# # Fixed Column Type Comparison
+# # ============================================================================
+# # In column verification:
+# if column_exists "$table" "$column"; then
+#     local actual_type=$(get_column_type "$table" "$column")
+#     local nullable=$(get_column_nullable "$table" "$column")
+    
+#     # Normalize both types
+#     local expected_normalized=$(normalize_pg_type "$expected_type")
+#     local actual_normalized=$(normalize_pg_type "$actual_type")
+    
+#     if [[ "$actual_normalized" == *"$expected_normalized"* ]] || \
+#        [[ "$expected_normalized" == *"$actual_normalized"* ]]; then
+#         print_success "Column '$table.$column' exists (type: $actual_type, nullable: $nullable)"
+#     else
+#         print_error "Column '$table.$column' type mismatch: expected $expected_type, got $actual_type"
+#     fi
+# fi
+
+# # ============================================================================
+# # Fixed Integer Check (handles newlines)
+# # ============================================================================
+# safe_int_check() {
+#     local var="$1"
+#     var=$(echo "$var" | tr -d '\n\r' | grep -oE '[0-9]+' | head -1)
+#     echo "${var:-0}"
+# }
+
+# # Usage:
+# error_count=$(safe_int_check "$(grep -c "ERROR:" "/tmp/psql_migration.log" 2>/dev/null || echo "0")")
+
+# if [[ $error_count -gt 0 ]]; then
+#     print_warning "Found $error_count ERROR(s) in migration log"
+# fi
 
 # Extract indexes
 extract_indexes() {
@@ -579,7 +653,7 @@ main() {
                 print_info "  Existing type: $existing_type"
                 print_info "  Migration type: $col_type"
                 
-                if [[ "$existing_type" != "${col_type,,}" ]]; then
+                if [[ "$existing_type" != "$(echo "$col_type" | tr '[:upper:]' '[:lower:]')" ]]; then
                     print_error "Type mismatch! Existing: $existing_type vs New: $col_type"
                     add_sql_problem "Column type mismatch: $table.$column"
                 fi

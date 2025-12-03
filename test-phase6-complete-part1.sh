@@ -3,7 +3,7 @@
 # test-phase6-complete-part1.sh - Phase 6 Production Hardening Tests (Part 1)
 # Sections 1-7: Infrastructure, Auth, Validation, Rate Limiting, Monitoring, Errors, Performance
 
-set -e
+set -euo pipefail
 
 # Color codes
 RED='\033[0;31m'
@@ -57,21 +57,21 @@ print_test() {
 
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
-    ((PASSED_TESTS++))
-    ((TOTAL_TESTS++))
+    ((PASSED_TESTS = PASSED_TESTS + 1))
+    ((TOTAL_TESTS = TOTAL_TESTS + 1))
 }
 
 print_failure() {
     echo -e "${RED}✗${NC} $1"
     echo "[FAIL] $1" >> "$LOG_FILE"
-    ((FAILED_TESTS++))
-    ((TOTAL_TESTS++))
+    ((FAILED_TESTS = FAILED_TESTS + 1))
+    ((TOTAL_TESTS = TOTAL_TESTS + 1))
 }
 
 print_skip() {
     echo -e "${MAGENTA}⊘${NC} $1"
-    ((SKIPPED_TESTS++))
-    ((TOTAL_TESTS++))
+    ((SKIPPED_TESTS = SKIPPED_TESTS + 1))
+    ((TOTAL_TESTS = TOTAL_TESTS + 1))
 }
 
 print_info() {
@@ -79,20 +79,34 @@ print_info() {
 }
 
 check_service() {
-    local service_name=$1
-    local url=$2
-    local timeout=5
-    
+    local service_name="$1"
+    local url="$2"
     print_test "Checking if $service_name is running"
     
-    if timeout $timeout curl -s -f "$url/health" > /dev/null 2>&1; then
+    # Graceful curl that doesn't cause script to exit
+    local response
+    response=$(timeout 5 curl -s "$url/health" 2>/dev/null || echo "")
+    
+    if [[ -n "$response" ]] && echo "$response" | jq -e '.status' > /dev/null 2>&1; then
         print_success "$service_name is running at $url"
         return 0
     else
         print_failure "$service_name is not running at $url"
-        return 1
+        return 1  # But script continues due to || true elsewhere
     fi
 }
+
+# # FIXED: Measure latency without triggering set -e
+# measure_latency() {
+#     local url=$1
+#     local start=$(date +%s%N)
+#     set +e
+#     timeout 5 curl -sf "$url" > /dev/null 2>&1
+#     set -e
+#     local end=$(date +%s%N)
+#     local latency=$(( (end - start) / 1000000 ))
+#     echo "$latency"
+# }
 
 measure_latency() {
     local url=$1
@@ -101,6 +115,44 @@ measure_latency() {
     local end=$(date +%s%N)
     local latency=$(( (end - start) / 1000000 ))
     echo "$latency"
+}
+
+# Helper to make authenticated curl request
+# AUTH_HEADER variable expansion doesn't work - When you store -H "Authorization: ..." in a variable and expand it with $AUTH_HEADER, bash treats it as a single argument with the quotes included, breaking the curl command.
+# Solution: Helper function - I created curl_with_auth() that handles the authentication conditionally inside the function, avoiding the variable expansion problem entirely.
+curl_with_auth() {
+    local method="$1"
+    local url="$2"
+    shift 2
+    
+    set +e
+    if [[ "$JWT_TOKEN" != "test-placeholder-token" && -n "$JWT_TOKEN" ]]; then
+        response=$(timeout 5 curl -s -X "$method" "$url" \
+            -H "Authorization: Bearer $JWT_TOKEN" \
+            "$@" 2>/dev/null)
+    else
+        response=$(timeout 5 curl -s -X "$method" "$url" \
+            "$@" 2>/dev/null)
+    fi
+    set -e
+    
+    if [[ -z "$response" ]]; then
+        echo '{}'
+    else
+        echo "$response"
+    fi
+}
+
+# Safe JSON field extractor
+# Also improved error checking - Using get_json_field() and proper regex matching instead of piping through grep.
+get_json_field() {
+    local json="$1"
+    local field="$2"
+    set +e
+    local result
+    result=$(echo "$json" | jq -r "$field // empty" 2>/dev/null)
+    set -e
+    echo "$result"
 }
 
 generate_request_id() {
@@ -239,6 +291,40 @@ else
     JWT_TOKEN="test-placeholder-token"
 fi
 
+print_test "Testing login with valid credentials"
+login_response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"paymail\":\"$TEST_PAYMAIL\",\"password\":\"TestPassword123!\"}" || echo '{}')
+
+login_token=$(echo "$login_response" | jq -r '.token // empty')
+if [[ -n "$login_token" ]]; then
+    print_success "Login successful, new token generated"
+    JWT_TOKEN="$login_token"  # Update the token
+else
+    print_failure "Login failed"
+fi
+
+print_test "Testing protected endpoint access with valid token"
+balance_response=$(timeout 5 curl -s -H "Authorization: Bearer $JWT_TOKEN" \
+    "$DEPOSIT_SERVICE_URL/balance/$TEST_PAYMAIL" || echo '{}')
+
+if echo "$balance_response" | jq -e '.paymail' > /dev/null 2>&1; then
+    print_success "Protected endpoint accessible with valid JWT"
+else
+    print_failure "Protected endpoint rejected valid JWT"
+fi
+
+print_test "Testing token refresh"
+refresh_response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/refresh" \
+    -H "Authorization: Bearer $JWT_TOKEN" || echo '{}')
+
+refresh_token=$(echo "$refresh_response" | jq -r '.token // empty')
+if [[ -n "$refresh_token" ]]; then
+    print_success "Token refresh successful"
+else
+    print_failure "Token refresh failed"
+fi
+
 print_subheader "2.2 Protected Endpoints"
 
 if [[ "$JWT_TOKEN" != "test-placeholder-token" ]]; then
@@ -322,6 +408,129 @@ else
     print_skip "Token expiration handling not implemented (got $http_code)"
 fi
 
+# # ============================================================================
+# # 3. INPUT VALIDATION
+# # ============================================================================
+# print_header "3. INPUT VALIDATION"
+
+# print_subheader "3.1 Paymail Validation"
+
+# AUTH_HEADER=""
+# if [[ "$JWT_TOKEN" != "test-placeholder-token" ]]; then
+#     AUTH_HEADER="-H \"Authorization: Bearer $JWT_TOKEN\""
+# fi
+
+# print_test "Valid paymail format"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"valid@domain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail" 2>/dev/null; then
+#     print_failure "Valid paymail rejected"
+# else
+#     print_success "Valid paymail accepted (or validation not enforced yet)"
+# fi
+
+# print_test "Invalid paymail - no @"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"invaliddomain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail\|validation_error" 2>/dev/null; then
+#     print_success "Invalid paymail (no @) rejected"
+# else
+#     print_skip "Paymail validation not implemented yet"
+# fi
+
+# print_test "Invalid paymail - XSS attempt"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"test<script>@domain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail\|validation_error" 2>/dev/null; then
+#     print_success "Paymail with XSS attempt rejected"
+# else
+#     print_skip "XSS validation not implemented yet"
+# fi
+
+# print_test "Invalid paymail - too long"
+# long_paymail=$(printf 'a%.0s' {1..300})"@domain.com"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"$long_paymail\", \"amount_satoshis\": 1000}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail\|validation_error" 2>/dev/null; then
+#     print_success "Overly long paymail rejected"
+# else
+#     print_skip "Length validation not implemented yet"
+# fi
+
+# print_subheader "3.2 Amount Validation"
+
+# print_test "Negative amount"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": -1000}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "invalid_amount\|validation_error" 2>/dev/null; then
+#     print_success "Negative amount rejected"
+# else
+#     print_skip "Negative amount validation not implemented yet"
+# fi
+
+# print_test "Zero amount"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": 0}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "invalid_amount\|validation_error" 2>/dev/null; then
+#     print_success "Zero amount rejected"
+# else
+#     print_skip "Zero amount validation not implemented yet"
+# fi
+
+# print_test "Amount exceeds max supply"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": 2100000000000000}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "invalid_amount\|validation_error\|exceeds_max" 2>/dev/null; then
+#     print_success "Amount exceeding max supply rejected"
+# else
+#     print_skip "Max amount validation not implemented yet"
+# fi
+
+# print_subheader "3.3 SQL Injection Prevention"
+
+# print_test "SQL injection attempt in paymail"
+# response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"test' OR '1'='1@domain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+
+# if echo "$response" | jq -e '.error_code' | grep -q "validation_error\|invalid_paymail" 2>/dev/null; then
+#     print_success "SQL injection attempt in paymail blocked"
+# else
+#     print_skip "SQL injection validation not implemented yet"
+# fi
+
+# print_test "SQL injection in query parameter doesn't expose SQL errors"
+# response=$(timeout 5 curl -s "$DEPOSIT_SERVICE_URL/deposits?paymail=test'%20OR%20'1'='1" \
+#     $AUTH_HEADER 2>/dev/null)
+
+# if ! echo "$response" | grep -qi "SQL\|syntax error\|pg_" 2>/dev/null; then
+#     print_success "SQL injection in query parameter handled safely"
+# else
+#     print_failure "SQL injection exposed SQL error"
+# fi
+
 # ============================================================================
 # 3. INPUT VALIDATION
 # ============================================================================
@@ -329,42 +538,34 @@ print_header "3. INPUT VALIDATION"
 
 print_subheader "3.1 Paymail Validation"
 
-AUTH_HEADER=""
-if [[ "$JWT_TOKEN" != "test-placeholder-token" ]]; then
-    AUTH_HEADER="-H \"Authorization: Bearer $JWT_TOKEN\""
-fi
-
 print_test "Valid paymail format"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"valid@domain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+    -d "{\"paymail\": \"valid@domain.com\", \"amount_satoshis\": 1000}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "invalid_paymail"; then
     print_failure "Valid paymail rejected"
 else
     print_success "Valid paymail accepted (or validation not enforced yet)"
 fi
 
 print_test "Invalid paymail - no @"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"invaliddomain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+    -d "{\"paymail\": \"invaliddomain.com\", \"amount_satoshis\": 1000}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail\|validation_error" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "invalid_paymail\|validation_error"; then
     print_success "Invalid paymail (no @) rejected"
 else
     print_skip "Paymail validation not implemented yet"
 fi
 
 print_test "Invalid paymail - XSS attempt"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"test<script>@domain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+    -d "{\"paymail\": \"test<script>@domain.com\", \"amount_satoshis\": 1000}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail\|validation_error" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "invalid_paymail\|validation_error"; then
     print_success "Paymail with XSS attempt rejected"
 else
     print_skip "XSS validation not implemented yet"
@@ -372,12 +573,11 @@ fi
 
 print_test "Invalid paymail - too long"
 long_paymail=$(printf 'a%.0s' {1..300})"@domain.com"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"$long_paymail\", \"amount_satoshis\": 1000}" 2>/dev/null)
+    -d "{\"paymail\": \"$long_paymail\", \"amount_satoshis\": 1000}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "invalid_paymail\|validation_error" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "invalid_paymail\|validation_error"; then
     print_success "Overly long paymail rejected"
 else
     print_skip "Length validation not implemented yet"
@@ -386,36 +586,33 @@ fi
 print_subheader "3.2 Amount Validation"
 
 print_test "Negative amount"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": -1000}" 2>/dev/null)
+    -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": -1000}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "invalid_amount\|validation_error" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "invalid_amount\|validation_error"; then
     print_success "Negative amount rejected"
 else
     print_skip "Negative amount validation not implemented yet"
 fi
 
 print_test "Zero amount"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": 0}" 2>/dev/null)
+    -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": 0}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "invalid_amount\|validation_error" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "invalid_amount\|validation_error"; then
     print_success "Zero amount rejected"
 else
     print_skip "Zero amount validation not implemented yet"
 fi
 
 print_test "Amount exceeds max supply"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": 2100000000000000}" 2>/dev/null)
+    -d "{\"paymail\": \"$TEST_PAYMAIL\", \"amount_satoshis\": 2100000000000000}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "invalid_amount\|validation_error\|exceeds_max" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "invalid_amount\|validation_error\|exceeds_max"; then
     print_success "Amount exceeding max supply rejected"
 else
     print_skip "Max amount validation not implemented yet"
@@ -424,20 +621,18 @@ fi
 print_subheader "3.3 SQL Injection Prevention"
 
 print_test "SQL injection attempt in paymail"
-response=$(timeout 5 curl -s -X POST "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"test' OR '1'='1@domain.com\", \"amount_satoshis\": 1000}" 2>/dev/null)
+    -d "{\"paymail\": \"test' OR '1'='1@domain.com\", \"amount_satoshis\": 1000}")
 
-if echo "$response" | jq -e '.error_code' | grep -q "validation_error\|invalid_paymail" 2>/dev/null; then
+if echo "$response" | jq -e '.error_code' 2>/dev/null | grep -q "validation_error\|invalid_paymail"; then
     print_success "SQL injection attempt in paymail blocked"
 else
     print_skip "SQL injection validation not implemented yet"
 fi
 
 print_test "SQL injection in query parameter doesn't expose SQL errors"
-response=$(timeout 5 curl -s "$DEPOSIT_SERVICE_URL/deposits?paymail=test'%20OR%20'1'='1" \
-    $AUTH_HEADER 2>/dev/null)
+response=$(curl_with_auth "GET" "$DEPOSIT_SERVICE_URL/deposits?paymail=test'%20OR%20'1'='1")
 
 if ! echo "$response" | grep -qi "SQL\|syntax error\|pg_" 2>/dev/null; then
     print_success "SQL injection in query parameter handled safely"
@@ -513,16 +708,72 @@ else
     print_skip "Metrics endpoint not implemented yet"
 fi
 
+# print_subheader "5.2 Structured Logging"
+
+# print_test "Request ID correlation"
+# REQUEST_ID=$(generate_request_id)
+# response=$(timeout 5 curl -s "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "X-Request-ID: $REQUEST_ID" 2>/dev/null)
+
+# print_info "Request ID: $REQUEST_ID"
+# print_skip "Log correlation check requires log file access"
+
 print_subheader "5.2 Structured Logging"
 
 print_test "Request ID correlation"
 REQUEST_ID=$(generate_request_id)
-response=$(timeout 5 curl -s "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
-    -H "X-Request-ID: $REQUEST_ID" 2>/dev/null)
+
+response=$(curl_with_auth "GET" "$DEPOSIT_SERVICE_URL/deposits" \
+    -H "X-Request-ID: $REQUEST_ID")
 
 print_info "Request ID: $REQUEST_ID"
 print_skip "Log correlation check requires log file access"
+
+# # ============================================================================
+# # 6. ERROR HANDLING
+# # ============================================================================
+# print_header "6. ERROR HANDLING & RESILIENCE"
+
+# print_subheader "6.1 Standardized Error Format"
+
+# print_test "Error response structure"
+# response=$(timeout 5 curl -s "$DEPOSIT_SERVICE_URL/deposits/nonexistent-id" \
+#     $AUTH_HEADER 2>/dev/null)
+
+# if echo "$response" | jq -e '.error, .error_code, .message' > /dev/null 2>&1; then
+#     print_success "Error response has standard structure"
+#     error_code=$(echo "$response" | jq -r '.error_code')
+#     print_info "Error code: $error_code"
+# else
+#     print_skip "Standardized error format not implemented yet"
+# fi
+
+# print_subheader "6.2 HTTP Status Code Mapping"
+
+# print_test "404 for not found"
+# response=$(timeout 5 curl -s -w "\n%{http_code}" "$DEPOSIT_SERVICE_URL/deposits/nonexistent-id" \
+#     $AUTH_HEADER 2>/dev/null)
+# http_code=$(echo "$response" | tail -n1)
+
+# if [[ "$http_code" == "404" ]]; then
+#     print_success "Returns 404 for not found"
+# else
+#     print_skip "404 status code not implemented (got $http_code)"
+# fi
+
+# print_test "400 for validation errors"
+# response=$(timeout 5 curl -s -w "\n%{http_code}" "$DEPOSIT_SERVICE_URL/deposits" \
+#     $AUTH_HEADER \
+#     -H "Content-Type: application/json" \
+#     -d "{\"paymail\": \"invalid\", \"amount_satoshis\": -100}" 2>/dev/null)
+# http_code=$(echo "$response" | tail -n1)
+
+# if [[ "$http_code" == "400" ]]; then
+#     print_success "Returns 400 for validation errors"
+# else
+#     print_skip "400 status code not implemented (got $http_code)"
+# fi
 
 # ============================================================================
 # 6. ERROR HANDLING
@@ -532,8 +783,7 @@ print_header "6. ERROR HANDLING & RESILIENCE"
 print_subheader "6.1 Standardized Error Format"
 
 print_test "Error response structure"
-response=$(timeout 5 curl -s "$DEPOSIT_SERVICE_URL/deposits/nonexistent-id" \
-    $AUTH_HEADER 2>/dev/null)
+response=$(curl_with_auth "GET" "$DEPOSIT_SERVICE_URL/deposits/nonexistent-id")
 
 if echo "$response" | jq -e '.error, .error_code, .message' > /dev/null 2>&1; then
     print_success "Error response has standard structure"
@@ -543,11 +793,11 @@ else
     print_skip "Standardized error format not implemented yet"
 fi
 
+
 print_subheader "6.2 HTTP Status Code Mapping"
 
 print_test "404 for not found"
-response=$(timeout 5 curl -s -w "\n%{http_code}" "$DEPOSIT_SERVICE_URL/deposits/nonexistent-id" \
-    $AUTH_HEADER 2>/dev/null)
+response=$(curl_with_auth "GET" "$DEPOSIT_SERVICE_URL/deposits/nonexistent-id" -w "\n%{http_code}")
 http_code=$(echo "$response" | tail -n1)
 
 if [[ "$http_code" == "404" ]]; then
@@ -556,11 +806,13 @@ else
     print_skip "404 status code not implemented (got $http_code)"
 fi
 
+
 print_test "400 for validation errors"
-response=$(timeout 5 curl -s -w "\n%{http_code}" "$DEPOSIT_SERVICE_URL/deposits" \
-    $AUTH_HEADER \
+response=$(curl_with_auth "POST" "$DEPOSIT_SERVICE_URL/deposits" \
     -H "Content-Type: application/json" \
-    -d "{\"paymail\": \"invalid\", \"amount_satoshis\": -100}" 2>/dev/null)
+    -d "{\"paymail\": \"invalid\", \"amount_satoshis\": -100}" \
+    -w "\n%{http_code}")
+
 http_code=$(echo "$response" | tail -n1)
 
 if [[ "$http_code" == "400" ]]; then

@@ -52,18 +52,18 @@ print_section() {
 
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
-    ((PASSED_CHECKS++))
+    ((PASSED_CHECKS = PASSED_CHECKS + 1))
 }
 
 print_error() {
     echo -e "${RED}✗${NC} $1"
-    ((FAILED_CHECKS++))
+    ((FAILED_CHECKS = FAILED_CHECKS + 1))
     VERIFICATION_FAILURES+=("$1")
 }
 
 print_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
-    ((WARNING_COUNT++))
+    ((WARNING_COUNT = WARNING_COUNT + 1))
 }
 
 print_info() {
@@ -154,18 +154,46 @@ get_table_columns() {
     query_db "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '$table' ORDER BY ordinal_position;"
 }
 
-get_foreign_keys() {
-    local table="$1"
-    query_db "SELECT conname FROM pg_constraint WHERE contype = 'f' AND conrelid = '$table'::regclass;"
+# ============================================================================
+# Type Normalization Function
+# ============================================================================
+
+normalize_pg_type() {
+    local type="$1"
+    type=$(echo "$type" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]//g')
+    
+    # Normalize common PostgreSQL type aliases
+    type="${type//varchar/character varying}"
+    type="${type//timestamptz/timestamp with time zone}"
+    type="${type//timestamp without time zone/timestamp}"
+    type="${type//int8/bigint}"
+    type="${type//int4/integer}"
+    type="${type//int2/smallint}"
+    type="${type//int/integer}"
+    type="${type//bool/boolean}"
+    
+    echo "$type"
+}
+
+types_match() {
+    local expected="$1"
+    local actual="$2"
+    
+    local norm_expected=$(normalize_pg_type "$expected")
+    local norm_actual=$(normalize_pg_type "$actual")
+    
+    # Check if either contains the other (handles variations)
+    [[ "$norm_actual" == *"$norm_expected"* ]] || [[ "$norm_expected" == *"$norm_actual"* ]]
 }
 
 # ============================================================================
-# SQL Parsing Functions (reuse from pre-check)
+# SQL Parsing Functions
 # ============================================================================
 
 extract_create_tables() {
     local file="$1"
     grep -iE "CREATE TABLE" "$file" | \
+        grep -v "^[[:space:]]*--" | \
         sed -E 's/.*CREATE TABLE[[:space:]]+(IF NOT EXISTS[[:space:]]+)?([a-z_]+).*/\2/I' | \
         sort -u | grep -v "^$" || true
 }
@@ -178,20 +206,26 @@ extract_do_block_columns() {
 
 extract_indexes() {
     local file="$1"
-    grep -iE "CREATE.*INDEX" "$file" | \
-        sed -E 's/.*CREATE.*INDEX[[:space:]]+(IF NOT EXISTS[[:space:]]+)?([a-z_]+).*/\2/I' | \
-        sort -u | grep -v "^$" || true
+    grep -iE "CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX" "$file" | \
+        grep -v "^[[:space:]]*--" | \
+        grep -v "^--" | \
+        sed -E 's/.*CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-z_0-9]+)[[:space:]]+ON.*/\3/I' | \
+        grep -v "^$" | \
+        grep -vE "^(INDEX|IF|NOT|EXISTS|UNIQUE|CREATE|ON)$" | \
+        sort -u || true
 }
 
 extract_constraints() {
     local file="$1"
     grep -iE "CONSTRAINT[[:space:]]+[a-z_]+" "$file" | \
+        grep -v "^[[:space:]]*--" | \
         sed -E 's/.*CONSTRAINT[[:space:]]+([a-z_]+).*/\1/I' | sort -u | grep -v "^$" || true
 }
 
 extract_functions() {
     local file="$1"
     grep -iE "CREATE.*FUNCTION" "$file" | \
+        grep -v "^[[:space:]]*--" | \
         sed -E 's/.*CREATE.*FUNCTION[[:space:]]+([a-z_]+)\(.*/\1/I' | \
         sort -u | grep -v "^$" || true
 }
@@ -199,6 +233,7 @@ extract_functions() {
 extract_triggers() {
     local file="$1"
     grep -iE "CREATE TRIGGER" "$file" | \
+        grep -v "^[[:space:]]*--" | \
         sed -E 's/.*CREATE TRIGGER[[:space:]]+([a-z_]+).*/\1/I' | \
         sort -u | grep -v "^$" || true
 }
@@ -206,8 +241,19 @@ extract_triggers() {
 extract_views() {
     local file="$1"
     grep -iE "CREATE.*VIEW" "$file" | \
+        grep -v "^[[:space:]]*--" | \
         sed -E 's/.*CREATE.*VIEW[[:space:]]+([a-z_]+).*/\1/I' | \
         sort -u | grep -v "^$" || true
+}
+
+# ============================================================================
+# Safe Integer Check
+# ============================================================================
+
+safe_int_check() {
+    local var="$1"
+    var=$(echo "$var" | tr -d '\n\r' | grep -oE '[0-9]+' | head -1)
+    echo "${var:-0}"
 }
 
 # ============================================================================
@@ -236,7 +282,7 @@ main() {
     
     # Check database connectivity
     print_section "Database Connectivity"
-    ((TOTAL_CHECKS++))
+    ((TOTAL_CHECKS = TOTAL_CHECKS + 1))
     
     if check_db_exists; then
         print_success "Database '$DB_NAME' is accessible"
@@ -322,11 +368,7 @@ main() {
                 local actual_type=$(get_column_type "$table" "$column")
                 local nullable=$(get_column_nullable "$table" "$column")
                 
-                # Normalize types for comparison
-                expected_type=$(echo "$expected_type" | tr '[:upper:]' '[:lower:]' | sed 's/varchar.*/character varying/')
-                actual_type=$(echo "$actual_type" | tr '[:upper:]' '[:lower:]')
-                
-                if [[ "$actual_type" == *"$expected_type"* ]] || [[ "$expected_type" == *"$actual_type"* ]]; then
+                if types_match "$expected_type" "$actual_type"; then
                     print_success "Column '$table.$column' exists (type: $actual_type, nullable: $nullable)"
                 else
                     print_error "Column '$table.$column' has wrong type: expected $expected_type, got $actual_type"
@@ -446,6 +488,7 @@ main() {
     # Check for orphaned foreign keys
     ((TOTAL_CHECKS++))
     local broken_fks=$(query_db "SELECT COUNT(*) FROM pg_constraint WHERE contype = 'f' AND NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = confrelid);")
+    broken_fks=$(safe_int_check "$broken_fks")
     if [[ "$broken_fks" -eq 0 ]]; then
         print_success "No broken foreign key constraints"
     else
@@ -455,6 +498,7 @@ main() {
     # Check for invalid indexes
     ((TOTAL_CHECKS++))
     local invalid_indexes=$(query_db "SELECT COUNT(*) FROM pg_index WHERE indisvalid = false;")
+    invalid_indexes=$(safe_int_check "$invalid_indexes")
     if [[ "$invalid_indexes" -eq 0 ]]; then
         print_success "All indexes are valid"
     else
@@ -464,6 +508,7 @@ main() {
     # Check for tables without primary keys (warning only)
     ((TOTAL_CHECKS++))
     local tables_no_pk=$(query_db "SELECT COUNT(*) FROM information_schema.tables t WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND NOT EXISTS (SELECT 1 FROM information_schema.table_constraints tc WHERE tc.table_schema = t.table_schema AND tc.table_name = t.table_name AND tc.constraint_type = 'PRIMARY KEY');")
+    tables_no_pk=$(safe_int_check "$tables_no_pk")
     if [[ "$tables_no_pk" -eq 0 ]]; then
         print_success "All tables have primary keys"
     else
@@ -478,7 +523,7 @@ main() {
     
     # Check PostgreSQL log for errors during migration (if accessible)
     if [[ -f "/tmp/psql_migration.log" ]]; then
-        local error_count=$(grep -c "ERROR:" "/tmp/psql_migration.log" 2>/dev/null || echo "0")
+        local error_count=$(safe_int_check "$(grep -c "ERROR:" "/tmp/psql_migration.log" 2>/dev/null || echo "0")")
         if [[ "$error_count" -gt 0 ]]; then
             print_warning "Found $error_count ERROR(s) in migration log"
             print_info "Review /tmp/psql_migration.log for details"
