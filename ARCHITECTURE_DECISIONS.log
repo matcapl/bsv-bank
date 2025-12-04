@@ -1,0 +1,12 @@
+# ARCHITECTURE_DECISIONS.log
+
+## Decision: Validation in Common Library (FINAL)
+- Date: 2025-12-03
+- Status: COMMITTED - Don't override
+- Reason: 77 tests in common cover all validation. 6 services share this.
+- Cost of duplication: 6x maintenance burden
+- Rollback cost: HIGH (would need to refactor all 5 remaining services)
+
+All validation functions MUST import from `bsv_bank_common::validation`.
+
+No exceptions. Reference this log if tempted to duplicate.

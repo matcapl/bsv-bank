@@ -57,7 +57,7 @@ A comprehensive shared library with 77 unit tests:
 
 ```bash
 # Apply Phase 6 migration
-psql -U postgres -d bsv_bank < migrations/009_users_and_auth.sql
+psql -U postgres -d bsv_bank < migrations/007_users_and_auth.sql
 ```
 
 ### 2. Set Environment Variables
@@ -74,7 +74,7 @@ RUST_LOG=info
 
 ```bash
 # Build common library
-cd services/common
+cd core/common
 cargo build
 
 # Build and run deposit service
@@ -180,13 +180,13 @@ deposit_service_errors_total{type="validation", operation="create_deposit"}
 To add Phase 6 features to other services (lending, channels, etc.):
 
 ```toml
-# services/lending-service/Cargo.toml
+# core/lending-service/Cargo.toml
 [dependencies]
 bsv-bank-common = { path = "../common" }
 ```
 
 ```rust
-// services/lending-service/src/main.rs
+// core/lending-service/src/main.rs
 use bsv_bank_common::{
     init_logging, JwtManager, ServiceMetrics,
 };
@@ -320,7 +320,7 @@ When adding new features:
 
 Questions or issues? Check:
 - Phase 6 tests: `tests/phase6/`
-- Common library docs: `services/common/src/`
+- Common library docs: `core/common/src/`
 - Test results: `test-phase6-*.log`
 
 ---

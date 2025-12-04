@@ -259,8 +259,16 @@ analyze_service() {
     # Count both .route() and attribute routes
     local route_macro_count
     local route_attr_count
-    route_macro_count=$(grep -c "\.route(" "$main_rs" 2>/dev/null || echo 0)
-    route_attr_count=$(grep -cE "#\[(get|post|put|delete|patch)" "$main_rs" 2>/dev/null || echo 0)
+
+    # On macOS, grep -c PATTERN file || echo 0 does not work the way you expect inside a command substitution, because grep -c never exits with a non-zero status if the file exists—even if the pattern is not found.
+    # route_macro_count=$(grep -c "\.route(" "$main_rs" 2>/dev/null || echo 0)
+    # route_attr_count=$(grep -cE "#\[(get|post|put|delete|patch)" "$main_rs" 2>/dev/null || echo 0)
+    route_macro_count=$(grep -c "\.route(" "$main_rs" 2>/dev/null || printf "0")
+    route_macro_count=$(printf "%s" "$route_macro_count" | tr -d '\n' | tr -d '\r')
+
+    route_attr_count=$(grep -cE "#\[(get|post|put|delete|patch)" "$main_rs" 2>/dev/null || printf "0")
+    route_attr_count=$(printf "%s" "$route_attr_count" | tr -d '\n' | tr -d '\r')
+
     endpoint_count=$((route_macro_count + route_attr_count))
     
     local has_database=0
