@@ -64,9 +64,21 @@ where
         let service = self.service.clone();
 
         Box::pin(async move {
-            // Skip auth for health and metrics endpoints
             let path = req.path();
-            if path == "/health" || path == "/metrics" || path == "/liveness" || path == "/readiness" {
+            
+            // Skip auth for public endpoints
+            let public_paths = [
+                "/health",
+                "/liveness",
+                "/readiness",
+                "/metrics",
+                "/register",
+                "/login",
+                "/refresh",
+            ];
+            
+            if public_paths.iter().any(|p| path.starts_with(p)) {
+                // Skip authentication for public routes
                 return service.call(req).await;
             }
 
@@ -129,6 +141,36 @@ mod tests {
         .await;
 
         let req = test::TestRequest::get().uri("/health").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+    }
+
+    #[actix_web::test]
+    async fn test_auth_middleware_allows_register_endpoint() {
+        let jwt_manager = JwtManager::new("test-secret".to_string());
+        let app = test::init_service(
+            App::new()
+                .wrap(AuthMiddleware::new(jwt_manager))
+                .route("/register", web::post().to(test_handler)),
+        )
+        .await;
+
+        let req = test::TestRequest::post().uri("/register").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+    }
+
+    #[actix_web::test]
+    async fn test_auth_middleware_allows_login_endpoint() {
+        let jwt_manager = JwtManager::new("test-secret".to_string());
+        let app = test::init_service(
+            App::new()
+                .wrap(AuthMiddleware::new(jwt_manager))
+                .route("/login", web::post().to(test_handler)),
+        )
+        .await;
+
+        let req = test::TestRequest::post().uri("/login").to_request();
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
     }

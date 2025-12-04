@@ -1,8 +1,9 @@
-// services/blockchain-monitor/src/main.rs
+// core/blockchain-monitor/src/main.rs
 // Blockchain Monitor Service - Port 8084
 // Monitors BSV testnet via WhatsOnChain API
+// Phase 6 Production Hardening
 
-use actix_web::{web, App, HttpResponse, HttpServer, Result};
+use actix_web::{web, App, HttpResponse, HttpServer, Result, middleware};
 use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -10,6 +11,61 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
+use bsv_bank_common::{
+    init_logging, ServiceMetrics,
+    validate_txid, validate_address,
+};
+use dotenv::dotenv;
+use prometheus::Registry;
+use std::time::SystemTime;
+use thiserror::Error;
+
+// ============================================================================
+// ERROR TYPES (Phase 6)
+// ============================================================================
+
+#[derive(Debug, Error)]
+enum ServiceError {
+    #[error("Invalid input: {0}")]
+    ValidationError(String),
+    #[error("Database error: {0}")]
+    DatabaseError(String),
+    #[error("WhatsOnChain API error: {0}")]
+    ApiError(String),
+    #[error("Transaction not found: {0}")]
+    NotFoundError(String),
+}
+
+impl actix_web::ResponseError for ServiceError {
+    fn error_response(&self) -> HttpResponse {
+        match self {
+            ServiceError::ValidationError(msg) => {
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "validation_error",
+                    "message": msg
+                }))
+            }
+            ServiceError::DatabaseError(msg) => {
+                HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "database_error",
+                    "message": msg
+                }))
+            }
+            ServiceError::ApiError(msg) => {
+                HttpResponse::BadGateway().json(serde_json::json!({
+                    "error": "api_error",
+                    "message": msg
+                }))
+            }
+            ServiceError::NotFoundError(msg) => {
+                HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "not_found",
+                    "message": msg
+                }))
+            }
+        }
+    }
+}
 
 // ============================================================================
 // Configuration
@@ -164,6 +220,7 @@ struct AppState {
     client: reqwest::Client,
     watched_addresses: Arc<RwLock<HashSet<String>>>,
     tx_cache: Arc<RwLock<HashMap<String, Transaction>>>,
+    start_time: SystemTime,
 }
 
 impl AppState {
@@ -177,6 +234,7 @@ impl AppState {
             client,
             watched_addresses: Arc::new(RwLock::new(HashSet::new())),
             tx_cache: Arc::new(RwLock::new(HashMap::new())),
+            start_time: SystemTime::now(),
         };
         
         // Load watched addresses from database
@@ -205,48 +263,48 @@ impl AppState {
 // ============================================================================
 
 impl AppState {
-    async fn woc_get_transaction(&self, txid: &str) -> Result<WocTransaction, String> {
+    async fn woc_get_transaction(&self, txid: &str) -> Result<WocTransaction, ServiceError> {
         let url = format!("{}/tx/{}", self.config.woc_api_base, txid);
         
         let response = self.client
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("WoC API error: {}", e))?;
+            .map_err(|e| ServiceError::ApiError(format!("Request failed: {}", e)))?;
         
         if !response.status().is_success() {
-            return Err(format!("WoC API returned status: {}", response.status()));
+            return Err(ServiceError::ApiError(format!("Status: {}", response.status())));
         }
         
         response
             .json::<WocTransaction>()
             .await
-            .map_err(|e| format!("Failed to parse WoC response: {}", e))
+            .map_err(|e| ServiceError::ApiError(format!("Parse error: {}", e)))
     }
     
-    async fn woc_get_chain_info(&self) -> Result<WocChainInfo, String> {
+    async fn woc_get_chain_info(&self) -> Result<WocChainInfo, ServiceError> {
         let url = format!("{}/chain/info", self.config.woc_api_base);
         
         let response = self.client
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("WoC API error: {}", e))?;
+            .map_err(|e| ServiceError::ApiError(e.to_string()))?;
         
         response
             .json::<WocChainInfo>()
             .await
-            .map_err(|e| format!("Failed to parse WoC response: {}", e))
+            .map_err(|e| ServiceError::ApiError(e.to_string()))
     }
     
-    async fn woc_get_address_utxos(&self, address: &str) -> Result<Vec<WocUtxo>, String> {
+    async fn woc_get_address_utxos(&self, address: &str) -> Result<Vec<WocUtxo>, ServiceError> {
         let url = format!("{}/address/{}/unspent", self.config.woc_api_base, address);
         
         let response = self.client
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("WoC API error: {}", e))?;
+            .map_err(|e| ServiceError::ApiError(e.to_string()))?;
         
         if !response.status().is_success() {
             return Ok(vec![]); // Address has no UTXOs
@@ -255,56 +313,47 @@ impl AppState {
         response
             .json::<Vec<WocUtxo>>()
             .await
-            .map_err(|e| format!("Failed to parse WoC response: {}", e))
+            .map_err(|e| ServiceError::ApiError(e.to_string()))
     }
     
-    async fn woc_get_address_balance(&self, address: &str) -> Result<WocBalance, String> {
+    async fn woc_get_address_balance(&self, address: &str) -> Result<WocBalance, ServiceError> {
         let url = format!("{}/address/{}/balance", self.config.woc_api_base, address);
         
-        log::debug!("Fetching balance from: {}", url);
+        tracing::debug!("Fetching balance from: {}", url);
         
         let response = self.client
             .get(&url)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
-            .map_err(|e| format!("WoC API error: {}", e))?;
+            .map_err(|e| ServiceError::ApiError(e.to_string()))?;
         
         let status = response.status();
-        log::debug!("WoC API response status: {}", status);
         
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            log::error!("WoC API error for {}: status={}, body={}", address, status, error_text);
-            return Err(format!("WoC API returned status: {} - {}", status, error_text));
+            tracing::error!("WoC API error for {}: status={}, body={}", address, status, error_text);
+            return Err(ServiceError::ApiError(format!("Status: {} - {}", status, error_text)));
         }
         
-        // Get response as text first for better error messages
         let response_text = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read response body: {}", e))?;
+            .map_err(|e| ServiceError::ApiError(e.to_string()))?;
         
-        log::debug!("WoC API raw response: {}", response_text);
-        
-        // Check for empty response
         if response_text.trim().is_empty() {
-            log::warn!("Empty response from WoC for address: {}", address);
+            tracing::warn!("Empty response from WoC for address: {}", address);
             return Ok(WocBalance {
                 confirmed: 0,
                 unconfirmed: 0,
             });
         }
         
-        // Parse JSON
         serde_json::from_str::<WocBalance>(&response_text)
-            .map_err(|e| {
-                log::error!("JSON parse error: {} (response was: '{}')", e, response_text);
-                format!("Failed to parse WoC response: error decoding response body: {}", e)
-            })
+            .map_err(|e| ServiceError::ApiError(format!("Parse error: {}", e)))
     }
     
-    async fn woc_broadcast_transaction(&self, tx_hex: &str) -> Result<String, String> {
+    async fn woc_broadcast_transaction(&self, tx_hex: &str) -> Result<String, ServiceError> {
         let url = format!("{}/tx/raw", self.config.woc_api_base);
         
         #[derive(Serialize)]
@@ -319,17 +368,17 @@ impl AppState {
             })
             .send()
             .await
-            .map_err(|e| format!("WoC API error: {}", e))?;
+            .map_err(|e| ServiceError::ApiError(e.to_string()))?;
         
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Broadcast failed: {}", error_text));
+            return Err(ServiceError::ApiError(format!("Broadcast failed: {}", error_text)));
         }
         
         response
             .text()
             .await
-            .map_err(|e| format!("Failed to get txid: {}", e))
+            .map_err(|e| ServiceError::ApiError(e.to_string()))
     }
 }
 
@@ -338,7 +387,7 @@ impl AppState {
 // ============================================================================
 
 impl AppState {
-    async fn save_transaction(&self, tx: &Transaction) -> Result<(), sqlx::Error> {
+    async fn save_transaction(&self, tx: &Transaction) -> Result<(), ServiceError> {
         sqlx::query(
             r#"
             INSERT INTO blockchain_transactions 
@@ -371,12 +420,13 @@ impl AppState {
         .bind(tx.block_time)
         .bind(&tx.raw_tx)
         .execute(&self.db)
-        .await?;
+        .await
+        .map_err(|e| ServiceError::DatabaseError(e.to_string()))?;
         
         Ok(())
     }
     
-    async fn get_transaction(&self, txid: &str) -> Result<Option<Transaction>, sqlx::Error> {
+    async fn get_transaction(&self, txid: &str) -> Result<Option<Transaction>, ServiceError> {
         let row = sqlx::query(
             r#"
             SELECT txid, tx_type, from_address, to_address, amount_satoshis,
@@ -388,29 +438,30 @@ impl AppState {
         )
         .bind(txid)
         .fetch_optional(&self.db)
-        .await?;
+        .await
+        .map_err(|e| ServiceError::DatabaseError(e.to_string()))?;
         
         if let Some(row) = row {
             Ok(Some(Transaction {
-                txid: row.try_get("txid")?,
-                tx_type: row.try_get("tx_type")?,
-                from_address: row.try_get("from_address")?,
-                to_address: row.try_get("to_address")?,
-                amount_satoshis: row.try_get("amount_satoshis")?,
-                fee_satoshis: row.try_get("fee_satoshis")?,
-                confirmations: row.try_get("confirmations")?,
-                status: row.try_get("status")?,
-                block_hash: row.try_get("block_hash")?,
-                block_height: row.try_get("block_height")?,
-                block_time: row.try_get("block_time")?,
-                raw_tx: row.try_get("raw_tx")?,
+                txid: row.try_get("txid").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                tx_type: row.try_get("tx_type").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                from_address: row.try_get("from_address").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                to_address: row.try_get("to_address").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                amount_satoshis: row.try_get("amount_satoshis").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                fee_satoshis: row.try_get("fee_satoshis").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                confirmations: row.try_get("confirmations").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                status: row.try_get("status").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                block_hash: row.try_get("block_hash").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                block_height: row.try_get("block_height").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                block_time: row.try_get("block_time").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
+                raw_tx: row.try_get("raw_tx").map_err(|e| ServiceError::DatabaseError(e.to_string()))?,
             }))
         } else {
             Ok(None)
         }
     }
     
-    async fn save_confirmation_event(&self, update: &ConfirmationUpdate) -> Result<(), sqlx::Error> {
+    async fn save_confirmation_event(&self, update: &ConfirmationUpdate) -> Result<(), ServiceError> {
         sqlx::query(
             r#"
             INSERT INTO confirmation_events 
@@ -423,12 +474,13 @@ impl AppState {
         .bind(update.new_confirmations)
         .bind(update.block_height)
         .execute(&self.db)
-        .await?;
+        .await
+        .map_err(|e| ServiceError::DatabaseError(e.to_string()))?;
         
         Ok(())
     }
     
-    async fn add_watched_address(&self, address: &str, paymail: &str, purpose: &str) -> Result<(), sqlx::Error> {
+    async fn add_watched_address(&self, address: &str, paymail: &str, purpose: &str) -> Result<(), ServiceError> {
         sqlx::query(
             r#"
             INSERT INTO watched_addresses (address, paymail, purpose, created_at)
@@ -440,7 +492,8 @@ impl AppState {
         .bind(paymail)
         .bind(purpose)
         .execute(&self.db)
-        .await?;
+        .await
+        .map_err(|e| ServiceError::DatabaseError(e.to_string()))?;
         
         // Add to in-memory set
         let mut addresses = self.watched_addresses.write().await;
@@ -449,7 +502,7 @@ impl AppState {
         Ok(())
     }
     
-    async fn get_pending_transactions(&self) -> Result<Vec<String>, sqlx::Error> {
+    async fn get_pending_transactions(&self) -> Result<Vec<String>, ServiceError> {
         let rows = sqlx::query(
             r#"
             SELECT txid FROM blockchain_transactions
@@ -459,7 +512,8 @@ impl AppState {
             "#
         )
         .fetch_all(&self.db)
-        .await?;
+        .await
+        .map_err(|e| ServiceError::DatabaseError(e.to_string()))?;
         
         Ok(rows.into_iter().map(|row| row.get("txid")).collect())
     }
@@ -478,7 +532,7 @@ async fn start_monitoring_task(state: web::Data<AppState>) {
             if let Ok(pending_txids) = state.get_pending_transactions().await {
                 for txid in pending_txids {
                     if let Err(e) = update_transaction_confirmations(&state, &txid).await {
-                        eprintln!("Error updating TX {}: {}", txid, e);
+                        tracing::error!("Error updating TX {}: {}", txid, e);
                     }
                 }
             }
@@ -491,7 +545,7 @@ async fn start_monitoring_task(state: web::Data<AppState>) {
             
             for address in addresses {
                 if let Err(e) = check_address_for_new_transactions(&state, &address).await {
-                    eprintln!("Error checking address {}: {}", address, e);
+                    tracing::error!("Error checking address {}: {}", address, e);
                 }
             }
             
@@ -500,11 +554,9 @@ async fn start_monitoring_task(state: web::Data<AppState>) {
     });
 }
 
-async fn update_transaction_confirmations(state: &AppState, txid: &str) -> Result<(), String> {
+async fn update_transaction_confirmations(state: &AppState, txid: &str) -> Result<(), ServiceError> {
     // Get current state from database
-    let old_tx = state.get_transaction(txid).await
-        .map_err(|e| format!("DB error: {}", e))?;
-    
+    let old_tx = state.get_transaction(txid).await?;
     let old_confs = old_tx.as_ref().map(|t| t.confirmations).unwrap_or(0);
     
     // Query WhatsOnChain
@@ -530,8 +582,7 @@ async fn update_transaction_confirmations(state: &AppState, txid: &str) -> Resul
             raw_tx: woc_tx.hex,
         };
         
-        state.save_transaction(&tx).await
-            .map_err(|e| format!("Failed to save TX: {}", e))?;
+        state.save_transaction(&tx).await?;
         
         // Log confirmation event
         let update = ConfirmationUpdate {
@@ -541,32 +592,28 @@ async fn update_transaction_confirmations(state: &AppState, txid: &str) -> Resul
             block_height: woc_tx.blockheight,
         };
         
-        state.save_confirmation_event(&update).await
-            .map_err(|e| format!("Failed to save confirmation event: {}", e))?;
+        state.save_confirmation_event(&update).await?;
         
-        println!("✓ TX {} confirmations: {} → {}", txid, old_confs, new_confs);
+        tracing::info!("TX {} confirmations: {} → {}", txid, old_confs, new_confs);
     }
     
     Ok(())
 }
 
-async fn check_address_for_new_transactions(state: &AppState, address: &str) -> Result<(), String> {
+async fn check_address_for_new_transactions(state: &AppState, address: &str) -> Result<(), ServiceError> {
     // Get UTXOs for address
     let utxos = state.woc_get_address_utxos(address).await?;
     
     // Check each UTXO's transaction
     for utxo in utxos {
         // Check if we've seen this transaction
-        if state.get_transaction(&utxo.tx_hash).await
-            .map_err(|e| format!("DB error: {}", e))?
-            .is_none() 
-        {
+        if state.get_transaction(&utxo.tx_hash).await?.is_none() {
             // New transaction found!
-            println!("🆕 New TX detected for {}: {}", address, utxo.tx_hash);
+            tracing::info!("New TX detected for {}: {}", address, utxo.tx_hash);
             
             // Fetch and store transaction
             if let Err(e) = update_transaction_confirmations(state, &utxo.tx_hash).await {
-                eprintln!("Failed to fetch new TX: {}", e);
+                tracing::error!("Failed to fetch new TX: {}", e);
             }
         }
     }
@@ -604,24 +651,56 @@ fn calculate_output_amount(woc_tx: &WocTransaction) -> i64 {
 }
 
 // ============================================================================
-// HTTP Handlers
+// HTTP Handlers (Phase 6 Enhanced)
 // ============================================================================
 
-#[derive(Serialize)]
-struct HealthResponse {
-    status: String,
-    service: String,
-    network: String,
-    version: String,
+async fn health_check(data: web::Data<AppState>) -> Result<HttpResponse, ServiceError> {
+    let uptime = SystemTime::now()
+        .duration_since(data.start_time)
+        .unwrap()
+        .as_secs();
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "service": "blockchain-monitor",
+        "status": "healthy",
+        "network": data.config.network,
+        "version": "0.1.0",
+        "uptime_seconds": uptime,
+        "features": ["woc-integration", "tx-monitoring", "phase6-hardening"]
+    })))
 }
 
-async fn health_check(data: web::Data<AppState>) -> Result<HttpResponse> {
-    Ok(HttpResponse::Ok().json(HealthResponse {
-        status: "healthy".to_string(),
-        service: "blockchain-monitor".to_string(),
-        network: data.config.network.clone(),
-        version: "0.1.0".to_string(),
-    }))
+async fn liveness_check() -> Result<HttpResponse, ServiceError> {
+    Ok(HttpResponse::Ok().json(serde_json::json!({"status": "alive"})))
+}
+
+async fn readiness_check(data: web::Data<AppState>) -> Result<HttpResponse, ServiceError> {
+    // Check database connection
+    let db_ok = sqlx::query("SELECT 1")
+        .fetch_optional(&data.db)
+        .await
+        .is_ok();
+    
+    // Check WoC API
+    let woc_ok = data.woc_get_chain_info().await.is_ok();
+    
+    if db_ok && woc_ok {
+        Ok(HttpResponse::Ok().json(serde_json::json!({
+            "status": "ready",
+            "checks": {
+                "database": "ok",
+                "whatsonchain_api": "ok"
+            }
+        })))
+    } else {
+        Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "status": "not_ready",
+            "checks": {
+                "database": if db_ok { "ok" } else { "error" },
+                "whatsonchain_api": if woc_ok { "ok" } else { "error" }
+            }
+        })))
+    }
 }
 
 #[derive(Deserialize)]
@@ -633,7 +712,11 @@ async fn get_transaction(
     data: web::Data<AppState>,
     txid: web::Path<String>,
     query: web::Query<GetTxQuery>,
-) -> Result<HttpResponse> {
+) -> Result<HttpResponse, ServiceError> {
+    // Phase 6: Validate txid
+    validate_txid(&txid)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    
     // Check cache first
     {
         let cache = data.tx_cache.read().await;
@@ -647,8 +730,8 @@ async fn get_transaction(
     }
     
     // Check database
-    match data.get_transaction(&txid).await {
-        Ok(Some(tx)) => {
+    match data.get_transaction(&txid).await? {
+        Some(tx) => {
             // Cache it
             {
                 let mut cache = data.tx_cache.write().await;
@@ -661,50 +744,40 @@ async fn get_transaction(
             }
             Ok(HttpResponse::Ok().json(response))
         }
-        Ok(None) => {
+        None => {
             // Not in DB, query WhatsOnChain
-            match data.woc_get_transaction(&txid).await {
-                Ok(woc_tx) => {
-                    let tx = Transaction {
-                        txid: txid.to_string(),
-                        tx_type: None,
-                        from_address: extract_from_address(&woc_tx),
-                        to_address: extract_to_address(&woc_tx),
-                        amount_satoshis: calculate_output_amount(&woc_tx),
-                        fee_satoshis: None,
-                        confirmations: woc_tx.confirmations.unwrap_or(0),
-                        status: if woc_tx.confirmations.unwrap_or(0) > 0 { 
-                            "confirmed" 
-                        } else { 
-                            "pending" 
-                        }.to_string(),
-                        block_hash: woc_tx.blockhash.clone(),
-                        block_height: woc_tx.blockheight,
-                        block_time: woc_tx.blocktime.map(|t| {
-                            DateTime::<Utc>::from_timestamp(t, 0).unwrap_or_else(Utc::now)
-                        }),
-                        raw_tx: if query.include_raw.unwrap_or(false) {
-                            woc_tx.hex
-                        } else {
-                            None
-                        },
-                    };
-                    
-                    // Save to database
-                    let _ = data.save_transaction(&tx).await;
-                    
-                    Ok(HttpResponse::Ok().json(tx))
-                }
-                Err(e) => Ok(HttpResponse::NotFound().json(serde_json::json!({
-                    "error": "Transaction not found",
-                    "details": e
-                })))
-            }
+            let woc_tx = data.woc_get_transaction(&txid).await?;
+            
+            let tx = Transaction {
+                txid: txid.to_string(),
+                tx_type: None,
+                from_address: extract_from_address(&woc_tx),
+                to_address: extract_to_address(&woc_tx),
+                amount_satoshis: calculate_output_amount(&woc_tx),
+                fee_satoshis: None,
+                confirmations: woc_tx.confirmations.unwrap_or(0),
+                status: if woc_tx.confirmations.unwrap_or(0) > 0 { 
+                    "confirmed" 
+                } else { 
+                    "pending" 
+                }.to_string(),
+                block_hash: woc_tx.blockhash.clone(),
+                block_height: woc_tx.blockheight,
+                block_time: woc_tx.blocktime.map(|t| {
+                    DateTime::<Utc>::from_timestamp(t, 0).unwrap_or_else(Utc::now)
+                }),
+                raw_tx: if query.include_raw.unwrap_or(false) {
+                    woc_tx.hex
+                } else {
+                    None
+                },
+            };
+            
+            // Save to database
+            let _ = data.save_transaction(&tx).await;
+            
+            Ok(HttpResponse::Ok().json(tx))
         }
-        Err(e) => Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "Database error",
-            "details": e.to_string()
-        })))
     }
 }
 
@@ -718,36 +791,30 @@ struct ConfirmationsResponse {
 async fn get_confirmations(
     data: web::Data<AppState>,
     txid: web::Path<String>,
-) -> Result<HttpResponse> {
-    match data.woc_get_transaction(&txid).await {
-        Ok(woc_tx) => {
-            let confirmations = woc_tx.confirmations.unwrap_or(0);
-            Ok(HttpResponse::Ok().json(ConfirmationsResponse {
-                txid: txid.to_string(),
-                confirmations,
-                status: if confirmations > 0 { "confirmed" } else { "pending" }.to_string(),
-            }))
-        }
-        Err(e) => Ok(HttpResponse::NotFound().json(serde_json::json!({
-            "error": "Transaction not found",
-            "details": e
-        })))
-    }
+) -> Result<HttpResponse, ServiceError> {
+    // Phase 6: Validate txid
+    validate_txid(&txid)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    
+    let woc_tx = data.woc_get_transaction(&txid).await?;
+    let confirmations = woc_tx.confirmations.unwrap_or(0);
+    
+    Ok(HttpResponse::Ok().json(ConfirmationsResponse {
+        txid: txid.to_string(),
+        confirmations,
+        status: if confirmations > 0 { "confirmed" } else { "pending" }.to_string(),
+    }))
 }
 
-async fn get_chain_info(data: web::Data<AppState>) -> Result<HttpResponse> {
-    match data.woc_get_chain_info().await {
-        Ok(info) => Ok(HttpResponse::Ok().json(ChainInfo {
-            height: info.blocks,
-            best_block_hash: info.bestblockhash,
-            difficulty: info.difficulty,
-            chain: info.chain,
-        })),
-        Err(e) => Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "Failed to get chain info",
-            "details": e
-        })))
-    }
+async fn get_chain_info(data: web::Data<AppState>) -> Result<HttpResponse, ServiceError> {
+    let info = data.woc_get_chain_info().await?;
+    
+    Ok(HttpResponse::Ok().json(ChainInfo {
+        height: info.blocks,
+        best_block_hash: info.bestblockhash,
+        difficulty: info.difficulty,
+        chain: info.chain,
+    }))
 }
 
 #[derive(Serialize)]
@@ -761,19 +828,19 @@ struct AddressBalanceResponse {
 async fn get_address_balance(
     data: web::Data<AppState>,
     address: web::Path<String>,
-) -> Result<HttpResponse> {
-    match data.woc_get_address_balance(&address).await {
-        Ok(balance) => Ok(HttpResponse::Ok().json(AddressBalanceResponse {
-            address: address.to_string(),
-            confirmed_satoshis: balance.confirmed,
-            unconfirmed_satoshis: balance.unconfirmed,
-            total_satoshis: balance.confirmed + balance.unconfirmed,
-        })),
-        Err(e) => Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "Failed to get balance",
-            "details": e
-        })))
-    }
+) -> Result<HttpResponse, ServiceError> {
+    // Phase 6: Validate address
+    validate_address(&address)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    
+    let balance = data.woc_get_address_balance(&address).await?;
+    
+    Ok(HttpResponse::Ok().json(AddressBalanceResponse {
+        address: address.to_string(),
+        confirmed_satoshis: balance.confirmed,
+        unconfirmed_satoshis: balance.unconfirmed,
+        total_satoshis: balance.confirmed + balance.unconfirmed,
+    }))
 }
 
 #[derive(Serialize)]
@@ -786,29 +853,27 @@ struct AddressUtxosResponse {
 async fn get_address_utxos(
     data: web::Data<AppState>,
     address: web::Path<String>,
-) -> Result<HttpResponse> {
-    match data.woc_get_address_utxos(&address).await {
-        Ok(woc_utxos) => {
-            let utxos: Vec<Utxo> = woc_utxos.into_iter().map(|u| Utxo {
-                txid: u.tx_hash,
-                vout: u.tx_pos,
-                value: u.value,
-                height: u.height,
-            }).collect();
-            
-            let total_value = utxos.iter().map(|u| u.value).sum();
-            
-            Ok(HttpResponse::Ok().json(AddressUtxosResponse {
-                address: address.to_string(),
-                utxos,
-                total_value,
-            }))
-        }
-        Err(e) => Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "Failed to get UTXOs",
-            "details": e
-        })))
-    }
+) -> Result<HttpResponse, ServiceError> {
+    // Phase 6: Validate address
+    validate_address(&address)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    
+    let woc_utxos = data.woc_get_address_utxos(&address).await?;
+    
+    let utxos: Vec<Utxo> = woc_utxos.into_iter().map(|u| Utxo {
+        txid: u.tx_hash,
+        vout: u.tx_pos,
+        value: u.value,
+        height: u.height,
+    }).collect();
+    
+    let total_value = utxos.iter().map(|u| u.value).sum();
+    
+    Ok(HttpResponse::Ok().json(AddressUtxosResponse {
+        address: address.to_string(),
+        utxos,
+        total_value,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -828,18 +893,18 @@ struct WatchAddressResponse {
 async fn watch_address(
     data: web::Data<AppState>,
     req: web::Json<WatchAddressRequest>,
-) -> Result<HttpResponse> {
-    match data.add_watched_address(&req.address, &req.paymail, &req.purpose).await {
-        Ok(_) => Ok(HttpResponse::Ok().json(WatchAddressResponse {
-            success: true,
-            address: req.address.clone(),
-            message: "Address is now being monitored".to_string(),
-        })),
-        Err(e) => Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "Failed to watch address",
-            "details": e.to_string()
-        })))
-    }
+) -> Result<HttpResponse, ServiceError> {
+    // Phase 6: Validate address
+    validate_address(&req.address)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    
+    data.add_watched_address(&req.address, &req.paymail, &req.purpose).await?;
+    
+    Ok(HttpResponse::Ok().json(WatchAddressResponse {
+        success: true,
+        address: req.address.clone(),
+        message: "Address is now being monitored".to_string(),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -856,67 +921,131 @@ struct BroadcastResponse {
 async fn broadcast_transaction(
     data: web::Data<AppState>,
     req: web::Json<BroadcastRequest>,
-) -> Result<HttpResponse> {
-    match data.woc_broadcast_transaction(&req.tx_hex).await {
-        Ok(txid) => {
-            // Start monitoring this transaction
-            let _ = update_transaction_confirmations(&data, &txid).await;
-            
-            Ok(HttpResponse::Ok().json(BroadcastResponse {
-                success: true,
-                txid,
-            }))
-        }
-        Err(e) => Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Broadcast failed",
-            "details": e
-        })))
+) -> Result<HttpResponse, ServiceError> {
+    // Phase 6: Validate hex format (basic check)
+    if req.tx_hex.is_empty() || req.tx_hex.len() % 2 != 0 {
+        return Err(ServiceError::ValidationError("Invalid transaction hex".to_string()));
     }
+    
+    let txid = data.woc_broadcast_transaction(&req.tx_hex).await?;
+    
+    // Start monitoring this transaction
+    let _ = update_transaction_confirmations(&data, &txid).await;
+    
+    Ok(HttpResponse::Ok().json(BroadcastResponse {
+        success: true,
+        txid,
+    }))
+}
+
+async fn metrics_handler(registry: web::Data<Registry>) -> Result<HttpResponse, actix_web::Error> {
+    use prometheus::Encoder;
+    let encoder = prometheus::TextEncoder::new();
+    let metric_families = registry.gather();
+    let mut buffer = vec![];
+    encoder.encode(&metric_families, &mut buffer)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    
+    Ok(HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4")
+        .body(buffer))
 }
 
 // ============================================================================
-// Main Application
+// Main Application (Phase 6 Enhanced)
 // ============================================================================
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    // Load environment variables
+    dotenv().ok();
+    
+    println!("🚀 BSV Bank - Blockchain Monitor Service Starting (Phase 6)...");
     
     let config = Config::from_env();
-    println!("🚀 Starting Blockchain Monitor Service");
     println!("   Network: {}", config.network);
     println!("   API: {}", config.woc_api_base);
     println!("   Polling interval: {}s", config.polling_interval_secs);
     
+    // Phase 6: Initialize structured logging
+    init_logging("blockchain-monitor");
+    tracing::info!("Starting Blockchain Monitor on port 8084");
+    tracing::info!("WhatsOnChain API: {}", config.woc_api_base);
+    
+    // Initialize application state
     let state = web::Data::new(
         AppState::new(config.clone())
             .await
             .expect("Failed to initialize application state")
     );
     
+    tracing::info!("Database connection established");
+    
+    // Phase 6: Prometheus metrics
+    let registry = Registry::new();
+    let _service_metrics = ServiceMetrics::new(&registry, "blockchain_monitor")
+        .expect("Failed to create service metrics");
+    tracing::info!("Metrics initialized");
+    
+    let registry_data = web::Data::new(registry);
+    
     // Start background monitoring task
     start_monitoring_task(state.clone()).await;
+    tracing::info!("Background monitoring task started");
     
-    println!("✓ Background monitoring task started");
-    println!("✓ Server starting on http://127.0.0.1:8084");
+    println!("✅ Service ready on http://127.0.0.1:8084");
+    println!("📋 Health: http://127.0.0.1:8084/health");
+    println!("📊 Metrics: http://127.0.0.1:8084/metrics");
+    tracing::info!("Starting HTTP server...");
     
     HttpServer::new(move || {
+        // Phase 6: CORS configuration
         let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header()
+            .allowed_origin("http://localhost:3000")
+            .allowed_origin("http://localhost:5173")
+            .allowed_methods(vec!["GET", "POST"])
+            .allowed_headers(vec![
+                actix_web::http::header::CONTENT_TYPE,
+            ])
             .max_age(3600);
         
         App::new()
             .wrap(cors)
+            // Phase 6: Request logging
+            .wrap(middleware::Logger::default())
+            // Phase 6: Security headers
+            .wrap(actix_web::middleware::DefaultHeaders::new()
+                .add(("X-Frame-Options", "DENY"))
+                .add(("X-Content-Type-Options", "nosniff"))
+                .add(("Content-Security-Policy", "default-src 'self'"))
+                .add(("X-XSS-Protection", "1; mode=block"))
+            )
             .app_data(state.clone())
+            .app_data(registry_data.clone())
+            
+            // Health endpoints (no auth)
             .route("/health", web::get().to(health_check))
+            .route("/liveness", web::get().to(liveness_check))
+            .route("/readiness", web::get().to(readiness_check))
+            
+            // Metrics endpoint (no auth)
+            .route("/metrics", web::get().to(metrics_handler))
+            
+            // Transaction endpoints
             .route("/tx/{txid}", web::get().to(get_transaction))
             .route("/tx/{txid}/confirmations", web::get().to(get_confirmations))
+            
+            // Chain info
             .route("/chain/info", web::get().to(get_chain_info))
+            
+            // Address endpoints
             .route("/address/{address}/balance", web::get().to(get_address_balance))
             .route("/address/{address}/utxos", web::get().to(get_address_utxos))
+            
+            // Monitoring endpoints
             .route("/watch/address", web::post().to(watch_address))
+            
+            // Broadcast endpoint
             .route("/broadcast", web::post().to(broadcast_transaction))
     })
     .bind("127.0.0.1:8084")?

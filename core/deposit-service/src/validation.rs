@@ -1,3 +1,5 @@
+// core/deposit-service/src/validation.rs
+
 use regex::Regex;
 
 pub fn validate_paymail(paymail: &str) -> Result<(), String> {

@@ -4,16 +4,50 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Internal dependencies
+bsv-bank-common = { path = "../common" }
+
+# Core framework
 actix-web = "4.4"
 actix-cors = "0.7"
 tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Database
 sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "chrono"] }
+
+# HTTP Client
 reqwest = { version = "0.11", features = ["json"] }
+
+# Time handling
 chrono = { version = "0.4", features = ["serde"] }
+
+# Crypto & Hashing
 hex = "0.4"
 sha2 = "0.10"
 bs58 = "0.5"
+jsonwebtoken = "9"
+
+# Configuration
+dotenv = "0.15"
+
+# Error handling (Phase 6)
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging & Tracing (Phase 6)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 env_logger = "0.11"
 log = "0.4"
+
+# Metrics (Phase 6)
+prometheus = { version = "0.13", features = ["process"] }
+lazy_static = "1.4"
+
+# Validation (Phase 6)
+validator = { version = "0.18", features = ["derive"] }
+regex = "1.10"

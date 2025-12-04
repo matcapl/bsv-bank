@@ -1,5 +1,6 @@
 // core/deposit-service/src/node-integration.rs
 
+// Abortive attempt with Grok
 // Remove or comment this line:
 // use bsv_node::BsvNodeClient;
 // use std::env;

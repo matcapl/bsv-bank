@@ -1,15 +1,48 @@
 [package]
 name = "lending-service"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
+# Phase 6: Common library with auth, validation, metrics
+bsv-bank-common = { path = "../common" }
+
+# Web framework
 actix-web = "4"
+actix-cors = "0.7"
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
+
+# Time handling
 chrono = { version = "0.4", features = ["serde"] }
+
+# UUID generation
 uuid = { version = "1.0", features = ["v4", "serde"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "chrono", "uuid"] }
+
+# Cryptography
 sha2 = "0.10"
 hex = "0.4"
+
+# JWT (via common, but keeping for compatibility)
+jsonwebtoken = "9"
+
+# Environment variables
+dotenv = "0.15"
+
+# Prometheus metrics
+prometheus = "0.13"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Phase 6: Error handling
+thiserror = "1.0"

@@ -351,6 +351,12 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::auth::AuthMiddleware::new(
                 jwt_manager.clone()
             ))
+            // Phase 6: Add security headers
+            .wrap(actix_web::middleware::DefaultHeaders::new()
+                .add(("X-Frame-Options", "DENY"))
+                .add(("X-Content-Type-Options", "nosniff"))
+                .add(("Content-Security-Policy", "default-src 'self'"))
+            )            
             .app_data(web::Data::new(db_pool.clone()))
             .app_data(health_state.clone())
             .app_data(auth_state.clone())

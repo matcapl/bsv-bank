@@ -1,39 +1,63 @@
 // core/payment-channel-service/src/main.rs
-// Payment Channel Service for BSV Bank
-// Enables instant, low-cost micropayments through off-chain channels
+// Payment Channel Service with Phase 6 Production Hardening
 
-use actix_web::{web, App, HttpResponse, HttpServer, Responder, Result};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder, Result, middleware};
+use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use std::time::Instant;
-use actix_cors::Cors;
+use std::time::{Instant, SystemTime};
+use bsv_bank_common::{
+    init_logging, ServiceMetrics,
+    validate_paymail, validate_amount,
+};
+use dotenv::dotenv;
+use prometheus::Registry;
+use thiserror::Error;
+
+// ============================================================================
+// ERROR TYPES
+// ============================================================================
+
+#[derive(Debug, Error)]
+enum ServiceError {
+    #[error("Invalid input: {0}")]
+    ValidationError(String),
+    #[error("Database error: {0}")]
+    DatabaseError(String),
+    #[error("Business logic error: {0}")]
+    BusinessError(String),
+}
+
+impl actix_web::ResponseError for ServiceError {
+    fn error_response(&self) -> HttpResponse {
+        match self {
+            ServiceError::ValidationError(msg) => {
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "validation_error",
+                    "message": msg
+                }))
+            }
+            ServiceError::DatabaseError(msg) => {
+                HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "database_error",
+                    "message": msg
+                }))
+            }
+            ServiceError::BusinessError(msg) => {
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "business_error",
+                    "message": msg
+                }))
+            }
+        }
+    }
+}
 
 // ============================================================================
 // DATA STRUCTURES
 // ============================================================================
-
-// #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-// pub struct PaymentChannel {
-//     pub id: Uuid,
-//     pub channel_id: String,
-//     pub party_a_paymail: String,
-//     pub party_b_paymail: String,
-//     pub initial_balance_a: i64,
-//     pub initial_balance_b: i64,
-//     pub current_balance_a: i64,
-//     pub current_balance_b: i64,
-//     pub status: String,
-//     pub sequence_number: i64,
-//     pub opened_at: DateTime<Utc>,
-//     pub closed_at: Option<DateTime<Utc>>,
-//     pub last_payment_at: Option<DateTime<Utc>>,
-//     pub settlement_txid: Option<String>,
-//     pub timeout_blocks: i32,
-//     pub created_at: DateTime<Utc>,
-//     pub updated_at: DateTime<Utc>,
-// }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PaymentChannel {
@@ -130,18 +154,15 @@ pub struct ErrorResponse {
     pub timestamp: DateTime<Utc>,
 }
 
-// ============================================================================
-// DATABASE CONNECTION
-// ============================================================================
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ForceCloseRequest {
+    pub party_paymail: String,
+    pub reason: Option<String>,
+}
 
-async fn create_pool() -> Result<PgPool, sqlx::Error> {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://a:@localhost:5432/bsv_bank".to_string());
-    
-    PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&database_url)
-        .await
+struct AppState {
+    db_pool: PgPool,
+    start_time: SystemTime,
 }
 
 // ============================================================================
@@ -165,46 +186,49 @@ fn create_error_response(error: &str, message: &str) -> HttpResponse {
     })
 }
 
+fn validate_channel_request(request: &OpenChannelRequest) -> Result<(), ServiceError> {
+    // Phase 6: Validate both paymails
+    validate_paymail(&request.party_a_paymail)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    validate_paymail(&request.party_b_paymail)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    
+    // Phase 6: Validate amounts
+    if request.initial_balance_a != 0 {
+        validate_amount(request.initial_balance_a)
+            .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    }
+    if request.initial_balance_b != 0 {
+        validate_amount(request.initial_balance_b)
+            .map_err(|e| ServiceError::ValidationError(e.to_string()))?;
+    }
+    
+    // Service-specific validation
+    if request.party_a_paymail == request.party_b_paymail {
+        return Err(ServiceError::BusinessError("Cannot create channel with yourself".to_string()));
+    }
+    
+    if request.initial_balance_a < 0 || request.initial_balance_b < 0 {
+        return Err(ServiceError::BusinessError("Balances must be non-negative".to_string()));
+    }
+    
+    if request.timeout_blocks <= 0 {
+        return Err(ServiceError::BusinessError("Timeout must be positive".to_string()));
+    }
+    
+    Ok(())
+}
+
 // ============================================================================
 // API ENDPOINTS
 // ============================================================================
 
-// Health check endpoint
-async fn health_check() -> impl Responder {
-    HttpResponse::Ok().json(serde_json::json!({
-        "service": "payment-channel-service",
-        "status": "healthy",
-        "version": "1.0.0",
-        "timestamp": Utc::now()
-    }))
-}
-
-// Open a new payment channel
 async fn open_channel(
     pool: web::Data<PgPool>,
     request: web::Json<OpenChannelRequest>,
-) -> Result<HttpResponse> {
-    // Validate request
-    if request.party_a_paymail == request.party_b_paymail {
-        return Ok(create_error_response(
-            "InvalidRequest",
-            "Cannot create channel with yourself"
-        ));
-    }
-    
-    if request.initial_balance_a < 0 || request.initial_balance_b < 0 {
-        return Ok(create_error_response(
-            "InvalidBalance",
-            "Balances must be non-negative"
-        ));
-    }
-    
-    if request.timeout_blocks <= 0 {
-        return Ok(create_error_response(
-            "InvalidTimeout",
-            "Timeout must be positive"
-        ));
-    }
+) -> Result<HttpResponse, ServiceError> {
+    // Phase 6: Validate all inputs
+    validate_channel_request(&request)?;
     
     // Generate unique channel ID
     let channel_id = generate_channel_id(&request.party_a_paymail, &request.party_b_paymail);
@@ -233,155 +257,28 @@ async fn open_channel(
     .bind(request.initial_balance_b)
     .bind(request.timeout_blocks)
     .fetch_one(pool.get_ref())
+    .await
+    .map_err(|e| ServiceError::DatabaseError(e.to_string()))?;
+    
+    // Create initial state snapshot
+    let _ = sqlx::query!(
+        r#"
+        INSERT INTO channel_states (
+            channel_id, sequence_number, balance_a, balance_b
+        ) VALUES ($1, 0, $2, $3)
+        "#,
+        &channel_id,
+        request.initial_balance_a,
+        request.initial_balance_b
+    )
+    .execute(pool.get_ref())
     .await;
     
-    match result {
-        Ok(channel) => {
-            // Create initial state snapshot
-            let _ = sqlx::query!(
-                r#"
-                INSERT INTO channel_states (
-                    channel_id, sequence_number, balance_a, balance_b
-                ) VALUES ($1, 0, $2, $3)
-                "#,
-                &channel_id,
-                request.initial_balance_a,
-                request.initial_balance_b
-            )
-            .execute(pool.get_ref())
-            .await;
-            
-            Ok(HttpResponse::Ok().json(channel))
-        }
-        Err(e) => {
-            eprintln!("Error creating channel: {}", e);
-            Ok(create_error_response(
-                "DatabaseError",
-                "Failed to create channel"
-            ))
-        }
-    }
+    tracing::info!("Channel opened: {} between {} and {}", 
+        channel_id, request.party_a_paymail, request.party_b_paymail);
+    
+    Ok(HttpResponse::Ok().json(result))
 }
-
-// // Send payment through channel
-// async fn send_payment(
-//     pool: web::Data<PgPool>,
-//     channel_id: web::Path<String>,
-//     request: web::Json<SendPaymentRequest>,
-// ) -> Result<HttpResponse> {
-//     let start_time = Instant::now();
-    
-//     // Validate request
-//     if request.amount_satoshis <= 0 {
-//         return Ok(create_error_response(
-//             "InvalidAmount",
-//             "Amount must be positive"
-//         ));
-//     }
-    
-//     if request.from_paymail == request.to_paymail {
-//         return Ok(create_error_response(
-//             "InvalidRequest",
-//             "Cannot pay yourself"
-//         ));
-//     }
-    
-//     // Use database function for atomic payment processing
-//     let result = sqlx::query!(
-//         r#"
-//         SELECT process_channel_payment($1, $2, $3, $4, $5) as result
-//         "#,
-//         channel_id.as_str(),
-//         &request.from_paymail,
-//         &request.to_paymail,
-//         request.amount_satoshis,
-//         request.memo.as_deref()
-//     )
-//     .fetch_one(pool.get_ref())
-//     .await;
-    
-//     match result {
-//         Ok(record) => {
-//             let processing_time = start_time.elapsed().as_millis() as i32;
-            
-//             if let Some(json) = record.result {
-//                 let payment_data: serde_json::Value = json;
-                
-//                 // Update processing time
-//                 if let Some(payment_id) = payment_data.get("payment_id").and_then(|v| v.as_str()) {
-//                     let _ = sqlx::query!(
-//                         "UPDATE channel_payments SET processing_time_ms = $1 WHERE id = $2",
-//                         processing_time,
-//                         Uuid::parse_str(payment_id).ok()
-//                     )
-//                     .execute(pool.get_ref())
-//                     .await;
-//                 }
-                
-//                 Ok(HttpResponse::Ok().json(PaymentResponse {
-//                     payment_id: Uuid::parse_str(
-//                         payment_data.get("payment_id")
-//                             .and_then(|v| v.as_str())
-//                             .unwrap_or("")
-//                     ).unwrap_or_else(|_| Uuid::new_v4()),
-//                     channel_id: channel_id.to_string(),
-//                     from_paymail: request.from_paymail.clone(),
-//                     to_paymail: request.to_paymail.clone(),
-//                     amount_satoshis: request.amount_satoshis,
-//                     sequence_number: payment_data.get("sequence_number")
-//                         .and_then(|v| v.as_i64())
-//                         .unwrap_or(0),
-//                     balance_a: payment_data.get("balance_a")
-//                         .and_then(|v| v.as_i64())
-//                         .unwrap_or(0),
-//                     balance_b: payment_data.get("balance_b")
-//                         .and_then(|v| v.as_i64())
-//                         .unwrap_or(0),
-//                     created_at: Utc::now(),
-//                     processing_time_ms: processing_time,
-//                 }))
-//             } else {
-//                 Ok(create_error_response(
-//                     "ProcessingError",
-//                     "Payment processing failed"
-//                 ))
-//             }
-//         }
-//         Err(e) => {
-//             eprintln!("Payment error: {}", e);
-//             let error_msg = e.to_string();
-            
-//             if error_msg.contains("not found") {
-//                 Ok(HttpResponse::NotFound().json(ErrorResponse {
-//                     error: "ChannelNotFound".to_string(),
-//                     message: "Channel does not exist".to_string(),
-//                     timestamp: Utc::now(),
-//                 }))
-//             } else if error_msg.contains("not active") {
-//                 Ok(create_error_response(
-//                     "ChannelInactive",
-//                     "Channel is not active"
-//                 ))
-//             } else if error_msg.contains("Insufficient balance") {
-//                 Ok(create_error_response(
-//                     "InsufficientBalance",
-//                     &error_msg
-//                 ))
-//             } else if error_msg.contains("not a party") {
-//                 Ok(HttpResponse::Forbidden().json(ErrorResponse {
-//                     error: "Unauthorized".to_string(),
-//                     message: error_msg,
-//                     timestamp: Utc::now(),
-//                 }))
-//             } else {
-//                 Ok(create_error_response(
-//                     "PaymentError",
-//                     &format!("Failed to process payment: {}", error_msg)
-//                 ))
-//             }
-//         }
-//     }
-// }
 
 async fn send_payment(
     pool: web::Data<PgPool>,
@@ -390,14 +287,20 @@ async fn send_payment(
 ) -> Result<HttpResponse> {
     let start_time = Instant::now();
     
-    // Validate request
-    if request.amount_satoshis <= 0 {
-        return Ok(create_error_response(
-            "InvalidAmount",
-            "Amount must be positive"
-        ));
+    // Phase 6: Validate paymails
+    if let Err(e) = validate_paymail(&request.from_paymail) {
+        return Ok(create_error_response("ValidationError", &e.to_string()));
+    }
+    if let Err(e) = validate_paymail(&request.to_paymail) {
+        return Ok(create_error_response("ValidationError", &e.to_string()));
     }
     
+    // Phase 6: Validate amount
+    if let Err(e) = validate_amount(request.amount_satoshis) {
+        return Ok(create_error_response("ValidationError", &e.to_string()));
+    }
+    
+    // Service-specific validation
     if request.from_paymail == request.to_paymail {
         return Ok(create_error_response(
             "InvalidRequest",
@@ -406,7 +309,6 @@ async fn send_payment(
     }
     
     // Use database function for atomic payment processing
-    // Cast to text and mark as non-null with "result!"
     let result = sqlx::query!(
         r#"
         SELECT process_channel_payment($1, $2, $3, $4, $5)::text as "result!"
@@ -424,11 +326,10 @@ async fn send_payment(
         Ok(record) => {
             let processing_time = start_time.elapsed().as_millis() as i32;
             
-            // Parse the JSON string directly (no Option check needed with !)
             let payment_data: serde_json::Value = match serde_json::from_str(&record.result) {
                 Ok(data) => data,
                 Err(e) => {
-                    eprintln!("JSON parse error: {} - Raw: {}", e, record.result);
+                    tracing::error!("JSON parse error: {} - Raw: {}", e, record.result);
                     return Ok(create_error_response(
                         "ProcessingError",
                         "Invalid response from database"
@@ -436,7 +337,6 @@ async fn send_payment(
                 }
             };
             
-            // Check success flag
             if !payment_data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
                 return Ok(create_error_response(
                     "ProcessingError",
@@ -444,7 +344,6 @@ async fn send_payment(
                 ));
             }
             
-            // Extract payment ID
             let payment_id_str = payment_data
                 .get("payment_id")
                 .and_then(|v| v.as_str())
@@ -462,7 +361,8 @@ async fn send_payment(
             .execute(pool.get_ref())
             .await;
             
-            // Return success response
+            tracing::info!("Payment processed: {} in {}ms", payment_id, processing_time);
+            
             Ok(HttpResponse::Ok().json(PaymentResponse {
                 payment_id,
                 channel_id: channel_id.to_string(),
@@ -486,10 +386,9 @@ async fn send_payment(
             }))
         }
         Err(e) => {
-            eprintln!("Payment error: {}", e);
+            tracing::error!("Payment error: {}", e);
             let error_msg = e.to_string();
             
-            // Handle specific error cases
             if error_msg.contains("not found") {
                 Ok(HttpResponse::NotFound().json(ErrorResponse {
                     error: "ChannelNotFound".to_string(),
@@ -522,7 +421,6 @@ async fn send_payment(
     }
 }
 
-// Get channel details
 async fn get_channel(
     pool: web::Data<PgPool>,
     channel_id: web::Path<String>,
@@ -542,7 +440,7 @@ async fn get_channel(
             timestamp: Utc::now(),
         })),
         Err(e) => {
-            eprintln!("Error fetching channel: {}", e);
+            tracing::error!("Error fetching channel: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to fetch channel"
@@ -551,7 +449,6 @@ async fn get_channel(
     }
 }
 
-// Get channel payment history
 async fn get_channel_history(
     pool: web::Data<PgPool>,
     channel_id: web::Path<String>,
@@ -575,7 +472,7 @@ async fn get_channel_history(
             "payments": payments
         }))),
         Err(e) => {
-            eprintln!("Error fetching history: {}", e);
+            tracing::error!("Error fetching history: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to fetch payment history"
@@ -584,11 +481,15 @@ async fn get_channel_history(
     }
 }
 
-// Get user's channels
 async fn get_user_channels(
     pool: web::Data<PgPool>,
     paymail: web::Path<String>,
 ) -> Result<HttpResponse> {
+    // Phase 6: Validate paymail
+    if let Err(e) = validate_paymail(&paymail) {
+        return Ok(create_error_response("ValidationError", &e.to_string()));
+    }
+    
     let channels = sqlx::query_as::<_, PaymentChannel>(
         r#"
         SELECT * FROM payment_channels 
@@ -607,7 +508,7 @@ async fn get_user_channels(
             "channels": channels
         }))),
         Err(e) => {
-            eprintln!("Error fetching user channels: {}", e);
+            tracing::error!("Error fetching user channels: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to fetch channels"
@@ -616,7 +517,6 @@ async fn get_user_channels(
     }
 }
 
-// Get all channels (for admin/debugging)
 async fn get_all_channels(
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
@@ -636,7 +536,7 @@ async fn get_all_channels(
             "channels": channels
         }))),
         Err(e) => {
-            eprintln!("Error fetching all channels: {}", e);
+            tracing::error!("Error fetching all channels: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to fetch channels"
@@ -645,7 +545,6 @@ async fn get_all_channels(
     }
 }
 
-// Get current balance
 async fn get_channel_balance(
     pool: web::Data<PgPool>,
     channel_id: web::Path<String>,
@@ -672,7 +571,7 @@ async fn get_channel_balance(
             timestamp: Utc::now(),
         })),
         Err(e) => {
-            eprintln!("Error fetching balance: {}", e);
+            tracing::error!("Error fetching balance: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to fetch balance"
@@ -681,13 +580,16 @@ async fn get_channel_balance(
     }
 }
 
-// Close channel cooperatively
 async fn close_channel(
     pool: web::Data<PgPool>,
     channel_id: web::Path<String>,
     request: web::Json<CloseChannelRequest>,
 ) -> Result<HttpResponse> {
-    // Generate mock settlement transaction ID
+    // Phase 6: Validate paymail
+    if let Err(e) = validate_paymail(&request.party_paymail) {
+        return Ok(create_error_response("ValidationError", &e.to_string()));
+    }
+    
     let settlement_txid = format!("mock-settlement-{}", Uuid::new_v4());
     
     let result = sqlx::query_as::<_, PaymentChannel>(
@@ -710,21 +612,24 @@ async fn close_channel(
     .await;
     
     match result {
-        Ok(Some(channel)) => Ok(HttpResponse::Ok().json(serde_json::json!({
-            "channel_id": channel.channel_id,
-            "status": "Closed",
-            "final_balance_a": channel.current_balance_a,
-            "final_balance_b": channel.current_balance_b,
-            "settlement_txid": settlement_txid,
-            "closed_at": channel.closed_at,
-            "success": true
-        }))),
+        Ok(Some(channel)) => {
+            tracing::info!("Channel closed: {}", channel_id);
+            Ok(HttpResponse::Ok().json(serde_json::json!({
+                "channel_id": channel.channel_id,
+                "status": "Closed",
+                "final_balance_a": channel.current_balance_a,
+                "final_balance_b": channel.current_balance_b,
+                "settlement_txid": settlement_txid,
+                "closed_at": channel.closed_at,
+                "success": true
+            })))
+        }
         Ok(None) => Ok(create_error_response(
             "ClosureError",
             "Channel not found or already closed"
         )),
         Err(e) => {
-            eprintln!("Error closing channel: {}", e);
+            tracing::error!("Error closing channel: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to close channel"
@@ -733,16 +638,10 @@ async fn close_channel(
     }
 }
 
-// ============================================================================
-// STATISTICS & ANALYTICS ENDPOINTS
-// ============================================================================
-
-// Get channel statistics
 async fn get_channel_stats(
     pool: web::Data<PgPool>,
     channel_id: web::Path<String>,
 ) -> Result<HttpResponse> {
-    // Get payment count and volume (cast aggregates to BIGINT)
     let stats = sqlx::query!(
         r#"
         SELECT 
@@ -777,7 +676,7 @@ async fn get_channel_stats(
             })))
         }
         Err(e) => {
-            eprintln!("Error fetching channel stats: {}", e);
+            tracing::error!("Error fetching channel stats: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to fetch statistics"
@@ -786,11 +685,9 @@ async fn get_channel_stats(
     }
 }
 
-// Get network-wide statistics
 async fn get_network_stats(
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
-    // Get channel counts by status (cast SUM to BIGINT)
     let channel_stats = sqlx::query!(
         r#"
         SELECT 
@@ -805,7 +702,6 @@ async fn get_network_stats(
     .fetch_one(pool.get_ref())
     .await;
     
-    // Get payment stats for last 24 hours (cast SUM to BIGINT)
     let payment_stats = sqlx::query!(
         r#"
         SELECT 
@@ -822,7 +718,7 @@ async fn get_network_stats(
         (Ok(channels), Ok(payments)) => {
             let total_channels = channels.total_channels.unwrap_or(0);
             let avg_balance = if total_channels > 0 {
-                channels.total_value_locked / total_channels  // No unwrap_or needed - it's marked with !
+                channels.total_value_locked / total_channels
             } else {
                 0
             };
@@ -832,10 +728,10 @@ async fn get_network_stats(
                 "active_channels": channels.active_channels.unwrap_or(0),
                 "open_channels": channels.open_channels.unwrap_or(0),
                 "closed_channels": channels.closed_channels.unwrap_or(0),
-                "total_value_locked": channels.total_value_locked,  // No unwrap_or - marked with !
+                "total_value_locked": channels.total_value_locked,
                 "average_channel_balance": avg_balance,
                 "total_payments_24h": payments.payments_24h.unwrap_or(0),
-                "total_volume_24h": payments.volume_24h,  // No unwrap_or - marked with !
+                "total_volume_24h": payments.volume_24h,
                 "timestamp": Utc::now()
             })))
         }
@@ -848,19 +744,16 @@ async fn get_network_stats(
     }
 }
 
-// Force close a channel (dispute handling)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ForceCloseRequest {
-    pub party_paymail: String,
-    pub reason: Option<String>,
-}
-
 async fn force_close_channel(
     pool: web::Data<PgPool>,
     channel_id: web::Path<String>,
     request: web::Json<ForceCloseRequest>,
 ) -> Result<HttpResponse> {
-    // Get current channel state
+    // Phase 6: Validate paymail
+    if let Err(e) = validate_paymail(&request.party_paymail) {
+        return Ok(create_error_response("ValidationError", &e.to_string()));
+    }
+    
     let channel = sqlx::query_as::<_, PaymentChannel>(
         "SELECT * FROM payment_channels WHERE channel_id = $1"
     )
@@ -870,7 +763,6 @@ async fn force_close_channel(
     
     match channel {
         Ok(Some(channel)) => {
-            // Verify party is authorized
             if channel.party_a_paymail != request.party_paymail 
                 && channel.party_b_paymail != request.party_paymail {
                 return Ok(HttpResponse::Forbidden().json(ErrorResponse {
@@ -880,7 +772,6 @@ async fn force_close_channel(
                 }));
             }
             
-            // Check if channel can be force closed
             if channel.status == "Closed" {
                 return Ok(create_error_response(
                     "ChannelClosed",
@@ -888,7 +779,6 @@ async fn force_close_channel(
                 ));
             }
             
-            // Mark channel as disputed
             let result = sqlx::query_as::<_, PaymentChannel>(
                 r#"
                 UPDATE payment_channels 
@@ -904,6 +794,7 @@ async fn force_close_channel(
             
             match result {
                 Ok(updated_channel) => {
+                    tracing::warn!("Force close initiated: {} by {}", channel_id, request.party_paymail);
                     Ok(HttpResponse::Ok().json(serde_json::json!({
                         "channel_id": updated_channel.channel_id,
                         "status": "Disputed",
@@ -917,7 +808,7 @@ async fn force_close_channel(
                     })))
                 }
                 Err(e) => {
-                    eprintln!("Error force closing channel: {}", e);
+                    tracing::error!("Error force closing channel: {}", e);
                     Ok(create_error_response(
                         "DatabaseError",
                         "Failed to force close channel"
@@ -933,7 +824,7 @@ async fn force_close_channel(
             }))
         }
         Err(e) => {
-            eprintln!("Error fetching channel: {}", e);
+            tracing::error!("Error fetching channel: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to fetch channel"
@@ -942,14 +833,13 @@ async fn force_close_channel(
     }
 }
 
-// Check for timeout expirations (admin function)
 async fn check_timeouts(
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse> {
     // Find disputed channels that have exceeded timeout
     // In a real implementation, this would check blockchain height
     // For now, we'll use a simple time-based check
-    
+
     let expired = sqlx::query_as::<_, PaymentChannel>(
         r#"
         SELECT * FROM payment_channels
@@ -959,13 +849,12 @@ async fn check_timeouts(
     )
     .fetch_all(pool.get_ref())
     .await;
-    
+
     match expired {
         Ok(channels) => {
             let mut closed_channels = Vec::new();
             
             for channel in channels {
-                // Force close the channel
                 let settlement_txid = format!("force-settlement-{}", Uuid::new_v4());
                 
                 let result = sqlx::query!(
@@ -1000,7 +889,7 @@ async fn check_timeouts(
             })))
         }
         Err(e) => {
-            eprintln!("Error checking timeouts: {}", e);
+            tracing::error!("Error checking timeouts: {}", e);
             Ok(create_error_response(
                 "DatabaseError",
                 "Failed to check timeouts"
@@ -1010,39 +899,154 @@ async fn check_timeouts(
 }
 
 // ============================================================================
-// PREVIOUS (AND RETURNED TO) MAIN SERVER
+// HEALTH & METRICS HANDLERS
+// ============================================================================
+async fn health_check(data: web::Data<AppState>) -> impl Responder {
+    let uptime = SystemTime::now()
+    .duration_since(data.start_time)
+    .unwrap()
+    .as_secs();
+    HttpResponse::Ok().json(serde_json::json!({
+        "service": "payment-channel-service",
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": Utc::now(),
+        "uptime_seconds": uptime
+    }))
+}
+
+async fn liveness_check() -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({"status": "alive"}))
+}
+
+async fn readiness_check(data: web::Data<AppState>) -> impl Responder {
+    // Check database connection
+    let db_ok = sqlx::query("SELECT 1")
+    .fetch_optional(&data.db_pool)
+    .await
+    .is_ok();
+    if db_ok {
+        HttpResponse::Ok().json(serde_json::json!({
+            "status": "ready",
+            "checks": {
+                "database": "ok"
+            }
+        }))
+    } else {
+        HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "status": "not_ready",
+            "checks": {
+                "database": "error"
+            }
+        }))
+    }
+}
+
+async fn metrics_handler(registry: web::Data<Registry>) -> Result<HttpResponse, actix_web::Error> {
+    use prometheus::Encoder;
+    let encoder = prometheus::TextEncoder::new();
+    let metric_families = registry.gather();
+    let mut buffer = vec![];
+    encoder.encode(&metric_families, &mut buffer)
+    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    Ok(HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4")
+        .body(buffer))
+}
+
+// ============================================================================
+// MAIN
 // ============================================================================
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("⚡ BSV Bank - Payment Channel Service Starting...");
-    
-    let pool = create_pool().await
-        .expect("Failed to create database pool");
-    
+    // Load environment variables
+    dotenv().ok();
+    println!("⚡ BSV Bank - Payment Channel Service Starting (Phase 6)...");
+
+    // Get configuration
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| {
+            println!("⚠️  DATABASE_URL not set, using default");
+            "postgres://postgres:postgres@localhost:5432/bsv_bank".to_string()
+        });
+
+    let port: u16 = 8083; // Fixed port for payment-channel-service
+
+    // Phase 6: Initialize structured logging
+    init_logging("payment-channel-service");
+    tracing::info!("Starting Payment Channel Service on port {}", port);
+
+    // Database connection pool
+    println!("📡 Connecting to database...");
+    let db_pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+        .expect("Failed to connect to database");
+
     println!("✅ Database connected");
-    println!("✅ Service ready on http://0.0.0.0:8083");
+    tracing::info!("Database connection established");
+
+    // Phase 6: Prometheus metrics
+    let registry = Registry::new();
+    let _service_metrics = ServiceMetrics::new(&registry, "payment_channel_service")
+        .expect("Failed to create service metrics");
+    let _channel_metrics = bsv_bank_common::ChannelMetrics::new(&registry)
+        .expect("Failed to create channel metrics");
+    tracing::info!("Metrics initialized");
+
+    // Application state
+    let app_state = web::Data::new(AppState {
+        db_pool: db_pool.clone(),
+        start_time: SystemTime::now(),
+    });
+
+    let registry_data = web::Data::new(registry);
+
+    println!("✅ Service ready on http://0.0.0.0:{}", port);
+    println!("📋 Health: http://0.0.0.0:{}/health", port);
+    println!("📊 Metrics: http://0.0.0.0:{}/metrics", port);
     println!("📋 Endpoints:");
-    println!("   GET  /health");
     println!("   POST /channels/open");
     println!("   POST /channels/{{id}}/payment");
     println!("   GET  /channels/{{id}}");
-    println!("   GET  /channels/{{id}}/history");
-    println!("   GET  /channels/{{id}}/balance");
-    println!("   GET  /channels/user/{{paymail}}");
     println!("   POST /channels/{{id}}/close");
-    println!("");
-    
+    tracing::info!("Starting HTTP server...");
+
     HttpServer::new(move || {
+        // Phase 6: CORS configuration
         let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header();
-            
+            .allowed_origin("http://localhost:3000")
+            .allowed_origin("http://localhost:5173")
+            .allowed_methods(vec!["GET", "POST"])
+            .allowed_headers(vec![
+                actix_web::http::header::AUTHORIZATION,
+                actix_web::http::header::CONTENT_TYPE,
+            ])
+            .max_age(3600);
+        
         App::new()
             .wrap(cors)
-            .app_data(web::Data::new(pool.clone()))
+            // Phase 6: Request logging
+            .wrap(middleware::Logger::default())
+            // Phase 6: Security headers
+            .wrap(middleware::DefaultHeaders::new()
+                .add(("X-Frame-Options", "DENY"))
+                .add(("X-Content-Type-Options", "nosniff"))
+                .add(("Content-Security-Policy", "default-src 'self'"))
+                .add(("X-XSS-Protection", "1; mode=block"))
+            )
+            .app_data(web::Data::new(db_pool.clone()))
+            .app_data(app_state.clone())
+            .app_data(registry_data.clone())
+            // Health endpoints (no auth)
             .route("/health", web::get().to(health_check))
+            .route("/liveness", web::get().to(liveness_check))
+            .route("/readiness", web::get().to(readiness_check))
+            // Metrics endpoint (no auth)
+            .route("/metrics", web::get().to(metrics_handler))
+            // Business endpoints
             .route("/channels/open", web::post().to(open_channel))
             .route("/channels/{channel_id}/payment", web::post().to(send_payment))
             .route("/channels/{channel_id}", web::get().to(get_channel))
@@ -1056,58 +1060,7 @@ async fn main() -> std::io::Result<()> {
             .route("/channels/check-timeouts", web::post().to(check_timeouts))            
             .route("/channels/{channel_id}/close", web::post().to(close_channel))
     })
-    .bind(("0.0.0.0", 8083))?
+    .bind(("0.0.0.0", port))?
     .run()
     .await
 }
-
-// // ============================================================================
-// // EXAMPLE 12: Main Application Setup
-// // services/channel-service/src/main.rs (Updated - NO! merely proposed and likely to be rejected)
-// // ============================================================================
-
-// #[actix_web::main]
-// async fn main() -> std::io::Result<()> {
-//     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-    
-//     println!("🚀 Starting Enhanced Channel Service (Phase 5)");
-    
-//     let state = web::Data::new(
-//         AppState::new()
-//             .await
-//             .expect("Failed to initialize application state")
-//     );
-    
-//     println!("✓ Database connected");
-//     println!("✓ Blockchain services configured:");
-//     println!("   - Monitor: {}", state.blockchain_config.blockchain_monitor_url);
-//     println!("   - TX Builder: {}", state.blockchain_config.tx_builder_url);
-//     println!("   - SPV Service: {}", state.blockchain_config.spv_service_url);
-//     println!("   - Network: {}", state.blockchain_config.network);
-//     println!("   - Blockchain enabled: {}", state.blockchain_config.enable_blockchain);
-    
-//     println!("✓ Server starting on http://127.0.0.1:8083");
-    
-//     HttpServer::new(move || {
-//         let cors = Cors::default()
-//             .allow_any_origin()
-//             .allow_any_method()
-//             .allow_any_header()
-//             .max_age(3600);
-        
-//         App::new()
-//             .wrap(cors)
-//             .app_data(state.clone())
-//             // Phase 5 enhanced endpoints
-//             .route("/channels/create", web::post().to(create_channel_handler))
-//             .route("/channels/{id}/status", web::get().to(get_channel_status_handler))
-//             .route("/channels/{id}/close", web::post().to(close_channel_handler))
-//             // Existing Phase 4 endpoints...
-//             .route("/health", web::get().to(health_check))
-//             .route("/channels/{id}", web::get().to(get_channel))
-//             .route("/channels/{id}/pay", web::post().to(make_payment))
-//     })
-//     .bind("127.0.0.1:8083")?
-//     .run()
-//     .await
-// }

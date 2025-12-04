@@ -4,15 +4,41 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Phase 6: Common library with auth, validation, metrics
+bsv-bank-common = { path = "../common" }
+
+# Web framework
 actix-web = "4.4"
 actix-cors = "0.7"
+
+# Async runtime
 tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres"] }
+
+# Cryptography for Bitcoin
 hex = "0.4"
 sha2 = "0.10"
 ripemd = "0.1"
 bs58 = "0.5"
-env_logger = "0.11"
-log = "0.4"
+
+# Environment variables
+dotenv = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Prometheus metrics
+prometheus = "0.13"
+
+# Phase 6: Error handling
+thiserror = "1.0"
+
+# JWT (via common, but keeping for compatibility)
+jsonwebtoken = "9"
