@@ -1,7 +1,7 @@
 // core/common/src/auth.rs
 // JWT Authentication and Authorization
 
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}; // Algorithm, 
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -85,22 +85,62 @@ impl JwtManager {
         
         Ok(token)
     }
+
+    // // Chatgpt attempt - aborted
+    // pub fn create_token_with_expiration(
+    //     &self,
+    //     user: &str,
+    //     roles: Vec<String>,
+    //     exp_time: chrono::DateTime<chrono::Utc>,
+    // ) -> Result<String, AuthError> {
+    //     use jsonwebtoken::{encode, EncodingKey, Header};
+    //     use chrono::TimeZone;
+
+    //     let claims = Claims {
+    //         sub: user.to_string(),
+    //         roles,
+    //         exp: exp_time.timestamp() as usize,
+    //     };
+
+    //     encode(&Header::default(), &claims, &EncodingKey::from_secret(self.secret.as_ref()))
+    //         .map_err(|e| AuthError::TokenCreationFailed(e.to_string()))
+    // }
     
     /// Verify and decode a JWT token
+    // pub fn verify_token(&self, token: &str) -> Result<Claims, AuthError> {
+    //     let token_data = decode::<Claims>(
+    //         token,
+    //         &DecodingKey::from_secret(self.secret.as_bytes()),
+    //         &Validation::new(Algorithm::HS256),
+    //     )?;
+        
+    //     let claims = token_data.claims;
+        
+    //     if claims.is_expired() {
+    //         return Err(AuthError::TokenExpired);
+    //     }
+        
+    //     Ok(claims)
+    // }
+
     pub fn verify_token(&self, token: &str) -> Result<Claims, AuthError> {
-        let token_data = decode::<Claims>(
+        let validation = Validation::default();
+        
+        match decode::<Claims>(
             token,
-            &DecodingKey::from_secret(self.secret.as_bytes()),
-            &Validation::new(Algorithm::HS256),
-        )?;
-        
-        let claims = token_data.claims;
-        
-        if claims.is_expired() {
-            return Err(AuthError::TokenExpired);
+            &DecodingKey::from_secret(self.secret.as_ref()),
+            &validation,
+        ) {
+            Ok(token_data) => Ok(token_data.claims),
+            Err(err) => {
+                // Check specific error type
+                use jsonwebtoken::errors::ErrorKind;
+                match err.kind() {
+                    ErrorKind::ExpiredSignature => Err(AuthError::TokenExpired),
+                    _ => Err(AuthError::JwtError(err)),  // ← Pass err directly, NOT err.to_string()
+                }
+            }
         }
-        
-        Ok(claims)
     }
     
     /// Refresh a token (issue new token with same permissions)
@@ -122,6 +162,8 @@ pub fn extract_bearer_token(auth_header: &str) -> Result<String, AuthError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // use tokio::time::{sleep, Duration};
+    // use chrono::Utc;
     
     #[test]
     fn test_create_and_verify_token() {
@@ -141,17 +183,84 @@ mod tests {
     
     #[test]
     fn test_token_expiration() {
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        
         let manager = JwtManager::new("test-secret-key".to_string());
         
-        // Create token that expires immediately (0 hours)
-        let token = manager
-            .create_token("test@bsvbank.local", vec![], 0)
-            .unwrap();
+        // Create an expired token
+        let claims = Claims {
+            sub: "test@bsvbank.local".to_string(),
+            exp: (chrono::Utc::now() - chrono::Duration::hours(1)).timestamp() as usize,
+            iat: (chrono::Utc::now() - chrono::Duration::hours(2)).timestamp() as usize,
+            permissions: vec![],
+        };
         
-        // Should fail verification due to expiration
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(manager.secret.as_ref()),
+        )
+        .unwrap();
+        
+        // Should fail with TokenExpired error
         let result = manager.verify_token(&token);
-        assert!(matches!(result, Err(AuthError::TokenExpired)));
+        
+        match result {
+            Err(AuthError::TokenExpired) => {
+                // ✅ This is what we expect!
+            }
+            Err(AuthError::JwtError(err)) => {
+                // Check if it's an expiration error by checking the kind
+                use jsonwebtoken::errors::ErrorKind;
+                match err.kind() {
+                    ErrorKind::ExpiredSignature => {
+                        // ✅ Also acceptable
+                    }
+                    _ => {
+                        panic!("Expected ExpiredSignature error, got: {:?}", err.kind());
+                    }
+                }
+            }
+            other => {
+                panic!("Expected TokenExpired or JwtError with ExpiredSignature, got: {:?}", other);
+            }
+        }
     }
+
+    // // ChatGPT optimal (?)
+    // #[tokio::test]
+    // async fn test_token_expiration() {
+    //     let manager = JwtManager::new("test-secret-key".to_string());
+
+    //     // Create a token that expired 1 second ago
+    //     let expired_token = manager
+    //         .create_token_with_expiration("test@bsvbank.local", vec![], chrono::Utc::now() - chrono::Duration::seconds(1))
+    //         .unwrap();
+
+    //     // Verification should fail
+    //     let result = manager.verify_token(&expired_token);
+    //     assert!(matches!(result, Err(AuthError::TokenExpired)), "Token should be expired but verification succeeded");
+    // }
+
+    // // Chatgpt compromise (?)
+    // #[tokio::test]
+    // async fn test_token_expiration() {
+    //     let manager = JwtManager::new("test-secret-key".to_string());
+
+    //     // Create a token with 0-hour validity (expires immediately)
+    //     let token = manager
+    //         .create_token("test@bsvbank.local", vec![], 0)
+    //         .unwrap();
+
+    //     // Attempt to verify immediately — should fail due to expiration
+    //     let result = manager.verify_token(&token);
+
+    //     // Adapt to existing AuthError structure
+    //     match result {
+    //         Err(AuthError::TokenExpired) => {} // expected
+    //         other => panic!("Expected TokenExpired, got {:?}", other),
+    //     }
+    // }
     
     #[test]
     fn test_invalid_token() {

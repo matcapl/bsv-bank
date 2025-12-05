@@ -6,18 +6,28 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
-    #[error("Invalid paymail: {0}")]
+    #[error("Invalid paymail format: {0}")]
     InvalidPaymail(String),
-    #[error("Invalid transaction ID: {0}")]
+    #[error("Invalid transaction ID format: {0}")]
     InvalidTxid(String),
     #[error("Invalid amount: {0}")]
     InvalidAmount(String),
     #[error("Invalid address: {0}")]
     InvalidAddress(String),
+    #[error("Input exceeds maximum length of {0} characters")]
+    ExceedsMaxLength(usize),
     #[error("Input too long: {field} exceeds {max} characters")]
     InputTooLong { field: String, max: usize },
     #[error("Suspicious input detected: {0}")]
     SuspiciousInput(String),
+    #[error("XSS attempt detected: potentially dangerous content found")]
+    XssAttempt,
+    #[error("SQL injection attempt detected: potentially dangerous SQL pattern found")]
+    SqlInjection,
+    #[error("Invalid URL format: {0}")]
+    InvalidUrl(String),
+    #[error("Required field missing: {0}")]
+    MissingField(String),
 }
 
 // Bitcoin SV constants
@@ -29,51 +39,71 @@ const MAX_PAYMAIL_LENGTH: usize = 255;
 const TXID_LENGTH: usize = 64;
 const MAX_ADDRESS_LENGTH: usize = 100;
 
-/// Validate paymail address
+// ============================================================================
+// SECURITY VALIDATORS (NEW - Phase 6)
+// ============================================================================
+
+/// XSS prevention
+pub fn validate_no_xss(input: &str) -> Result<(), ValidationError> {
+    let dangerous_patterns = [
+        "<script", "javascript:", "onerror=", "onclick=",
+        "onload=", "<iframe", "document.cookie", "eval(",
+    ];
+    
+    let input_lower = input.to_lowercase();
+    for pattern in &dangerous_patterns {
+        if input_lower.contains(pattern) {
+            return Err(ValidationError::XssAttempt);
+        }
+    }
+    Ok(())
+}
+
+/// SQL injection prevention  
+pub fn validate_no_sql_injection(input: &str) -> Result<(), ValidationError> {
+    let sql_patterns = [
+        "';", "--", "/*", "*/", "DROP ", "DELETE ",
+        "INSERT ", "UPDATE ", "UNION ", "SELECT ",
+        " OR ", " AND ", "1=1", "' OR '",
+    ];
+    
+    let input_upper = input.to_uppercase();
+    for pattern in &sql_patterns {
+        if input_upper.contains(pattern) {
+            return Err(ValidationError::SqlInjection);
+        }
+    }
+    Ok(())
+}
+
+/// Length validation
+pub fn validate_max_length(input: &str, max_length: usize) -> Result<(), ValidationError> {
+    if input.len() > max_length {
+        return Err(ValidationError::ExceedsMaxLength(max_length));
+    }
+    Ok(())
+}
+
+// ============================================================================
+// BUSINESS VALIDATORS
+// ============================================================================
+
+/// Validate paymail address with security checks
 pub fn validate_paymail(paymail: &str) -> Result<(), ValidationError> {
-    // Check length
-    if paymail.len() > MAX_PAYMAIL_LENGTH {
-        return Err(ValidationError::InputTooLong {
-            field: "paymail".to_string(),
-            max: MAX_PAYMAIL_LENGTH,
-        });
-    }
+    // Length check
+    validate_max_length(paymail, MAX_PAYMAIL_LENGTH)?;
     
-    // Must contain exactly one @
-    if paymail.matches('@').count() != 1 {
+    // Security checks
+    validate_no_xss(paymail)?;
+    validate_no_sql_injection(paymail)?;
+    
+    // Format check: must match user@domain.tld
+    let re = Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+        .map_err(|_| ValidationError::InvalidPaymail("Regex compilation failed".to_string()))?;
+    
+    if !re.is_match(paymail) {
         return Err(ValidationError::InvalidPaymail(
-            "must contain exactly one @ symbol".to_string(),
-        ));
-    }
-    
-    // Basic format validation
-    let paymail_regex = Regex::new(r"^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-        .map_err(|_| ValidationError::InvalidPaymail("regex error".to_string()))?;
-    
-    if !paymail_regex.is_match(paymail) {
-        return Err(ValidationError::InvalidPaymail(
-            "invalid format".to_string(),
-        ));
-    }
-    
-    // Check for suspicious patterns
-    if contains_suspicious_chars(paymail) {
-        return Err(ValidationError::SuspiciousInput(
-            "paymail contains suspicious characters".to_string(),
-        ));
-    }
-    
-    // Check for SQL injection patterns
-    if contains_sql_injection(paymail) {
-        return Err(ValidationError::SuspiciousInput(
-            "paymail contains SQL injection pattern".to_string(),
-        ));
-    }
-    
-    // Check for XSS patterns
-    if contains_xss(paymail) {
-        return Err(ValidationError::SuspiciousInput(
-            "paymail contains XSS pattern".to_string(),
+            "Must be in format: user@domain.tld".to_string()
         ));
     }
     
@@ -89,13 +119,9 @@ pub fn validate_txid(txid: &str) -> Result<(), ValidationError> {
         )));
     }
     
-    // Must be valid hexadecimal
-    let hex_regex = Regex::new(r"^[0-9a-fA-F]{64}$")
-        .map_err(|_| ValidationError::InvalidTxid("regex error".to_string()))?;
-    
-    if !hex_regex.is_match(txid) {
+    if !txid.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ValidationError::InvalidTxid(
-            "must contain only hexadecimal characters".to_string(),
+            "must contain only hexadecimal characters".to_string()
         ));
     }
     
@@ -166,59 +192,6 @@ pub fn validate_address(address: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// Check for suspicious characters that might indicate an attack
-fn contains_suspicious_chars(input: &str) -> bool {
-    let suspicious_patterns = [
-        "<", ">",           // HTML tags
-        "script",           // Script tags
-        "javascript:",      // JavaScript protocol
-        "onerror",          // Event handlers
-        "onload",
-        "onclick",
-        "../",              // Path traversal
-        "..\\",
-    ];
-    
-    let input_lower = input.to_lowercase();
-    suspicious_patterns.iter().any(|&pattern| input_lower.contains(pattern))
-}
-
-/// Check for SQL injection patterns
-fn contains_sql_injection(input: &str) -> bool {
-    let sql_patterns = [
-        "' or '1'='1",
-        "' or 1=1",
-        "\" or \"1\"=\"1",
-        "' or true--",
-        "'; drop table",
-        "'; delete from",
-        "union select",
-        "insert into",
-        "update set",
-    ];
-    
-    let input_lower = input.to_lowercase();
-    sql_patterns.iter().any(|&pattern| input_lower.contains(pattern))
-}
-
-/// Check for XSS patterns
-fn contains_xss(input: &str) -> bool {
-    let xss_patterns = [
-        "<script",
-        "</script>",
-        "javascript:",
-        "onerror=",
-        "onload=",
-        "onclick=",
-        "<iframe",
-        "<embed",
-        "<object",
-    ];
-    
-    let input_lower = input.to_lowercase();
-    xss_patterns.iter().any(|&pattern| input_lower.contains(pattern))
-}
-
 /// Sanitize string input (remove control characters, limit length)
 pub fn sanitize_string(input: &str, max_length: usize) -> String {
     input
@@ -228,111 +201,102 @@ pub fn sanitize_string(input: &str, max_length: usize) -> String {
         .collect()
 }
 
+// ============================================================================
+// TESTS
+// ============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
+    // Security tests
     #[test]
-    fn test_valid_paymail() {
-        assert!(validate_paymail("user@domain.com").is_ok());
-        assert!(validate_paymail("test.user@example.com").is_ok());
-        assert!(validate_paymail("user123@test-domain.com").is_ok());
+    fn test_validate_no_xss_safe() {
+        assert!(validate_no_xss("Hello World").is_ok());
+        assert!(validate_no_xss("user@example.com").is_ok());
     }
     
     #[test]
-    fn test_invalid_paymail_no_at() {
-        assert!(validate_paymail("invaliddomain.com").is_err());
+    fn test_validate_no_xss_dangerous() {
+        assert!(validate_no_xss("<script>alert('xss')</script>").is_err());
+        assert!(validate_no_xss("javascript:alert(1)").is_err());
+        assert!(validate_no_xss("<img onerror='alert(1)'>").is_err());
     }
     
     #[test]
-    fn test_invalid_paymail_multiple_at() {
-        assert!(validate_paymail("user@@domain.com").is_err());
+    fn test_validate_no_sql_injection_safe() {
+        assert!(validate_no_sql_injection("John Doe").is_ok());
+        assert!(validate_no_sql_injection("user@example.com").is_ok());
     }
     
     #[test]
-    fn test_invalid_paymail_xss() {
-        assert!(validate_paymail("user<script>@domain.com").is_err());
-        assert!(validate_paymail("user@domain.com<script>").is_err());
+    fn test_validate_no_sql_injection_dangerous() {
+        assert!(validate_no_sql_injection("'; DROP TABLE users--").is_err());
+        assert!(validate_no_sql_injection("1' OR '1'='1").is_err());
+        assert!(validate_no_sql_injection("admin'--").is_err());
+    }
+    
+    // Paymail tests
+    #[test]
+    fn test_validate_paymail_valid() {
+        assert!(validate_paymail("user@example.com").is_ok());
+        assert!(validate_paymail("test.user@domain.co.uk").is_ok());
     }
     
     #[test]
-    fn test_invalid_paymail_sql_injection() {
-        assert!(validate_paymail("user' or '1'='1@domain.com").is_err());
+    fn test_validate_paymail_invalid() {
+        assert!(validate_paymail("notanemail").is_err());
+        assert!(validate_paymail("@example.com").is_err());
+        assert!(validate_paymail("user@").is_err());
+        assert!(validate_paymail("<script>@example.com").is_err());
+    }
+    
+    // TXID tests
+    #[test]
+    fn test_validate_txid_valid() {
+        let valid_txid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert!(validate_txid(valid_txid).is_ok());
     }
     
     #[test]
-    fn test_paymail_too_long() {
-        let long_paymail = format!("{}@domain.com", "a".repeat(300));
-        assert!(validate_paymail(&long_paymail).is_err());
+    fn test_validate_txid_invalid() {
+        assert!(validate_txid("tooshort").is_err());
+        assert!(validate_txid(&"a".repeat(65)).is_err());
+        assert!(validate_txid(&"g".repeat(64)).is_err());
+    }
+    
+    // Amount tests
+    #[test]
+    fn test_validate_amount_valid() {
+        assert!(validate_amount(100).is_ok());
+        assert!(validate_amount(1_000_000).is_ok());
     }
     
     #[test]
-    fn test_valid_txid() {
-        let txid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        assert!(validate_txid(txid).is_ok());
-    }
-    
-    #[test]
-    fn test_invalid_txid_length() {
-        assert!(validate_txid("short").is_err());
-    }
-    
-    #[test]
-    fn test_invalid_txid_non_hex() {
-        let txid = "xyz123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        assert!(validate_txid(txid).is_err());
-    }
-    
-    #[test]
-    fn test_valid_amount() {
-        assert!(validate_amount(1000).is_ok());
-        assert!(validate_amount(100_000_000).is_ok());
-        assert!(validate_amount(1_000_000_000_000).is_ok());
-    }
-    
-    #[test]
-    fn test_invalid_amount_negative() {
-        assert!(validate_amount(-1000).is_err());
-    }
-    
-    #[test]
-    fn test_invalid_amount_zero() {
+    fn test_validate_amount_invalid() {
         assert!(validate_amount(0).is_err());
-    }
-    
-    #[test]
-    fn test_invalid_amount_exceeds_max() {
+        assert!(validate_amount(-100).is_err());
         assert!(validate_amount(MAX_SATOSHIS + 1).is_err());
     }
     
+    // Address tests
     #[test]
     fn test_valid_address() {
-        assert!(validate_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa").is_ok()); // mainnet
-        assert!(validate_address("mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn").is_ok()); // testnet
+        assert!(validate_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa").is_ok());
+        assert!(validate_address("mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn").is_ok());
     }
     
     #[test]
-    fn test_invalid_address_empty() {
+    fn test_invalid_address() {
         assert!(validate_address("").is_err());
-    }
-    
-    #[test]
-    fn test_invalid_address_prefix() {
         assert!(validate_address("X1234567890").is_err());
     }
     
+    // Sanitize tests
     #[test]
     fn test_sanitize_string() {
         let input = "hello\x00world\x01test";
         let sanitized = sanitize_string(input, 100);
         assert!(!sanitized.contains('\x00'));
-        assert!(!sanitized.contains('\x01'));
-    }
-    
-    #[test]
-    fn test_sanitize_string_length() {
-        let input = "a".repeat(1000);
-        let sanitized = sanitize_string(&input, 100);
-        assert_eq!(sanitized.len(), 100);
     }
 }

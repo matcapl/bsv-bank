@@ -8,13 +8,15 @@ pub mod health;
 pub mod logging;
 pub mod metrics;
 pub mod error;
+pub mod middleware;
 
 // Re-export commonly used items
 pub use auth::{AuthError, Claims, JwtManager};
 pub use validation::{
-    validate_address, validate_amount, validate_paymail, validate_txid, ValidationError,
+    validate_address, validate_amount, validate_paymail, validate_txid, 
+    validate_no_xss, validate_no_sql_injection, validate_max_length, ValidationError,
 };
-pub use rate_limit::{RateLimit, RateLimiter, RateLimitError, RateLimitInfo};
+pub use rate_limit::{RateLimit, RateLimiter, RateLimitError, RateLimitInfo, start_cleanup_task};
 pub use health::{
     check_database_health, check_external_api_health, HealthResponse, HealthStatus,
     DependencyHealth, LivenessProbe, ReadinessProbe,
@@ -25,8 +27,10 @@ pub use logging::{
 };
 pub use metrics::{
     ServiceMetrics, MetricsTimer, DepositMetrics, LendingMetrics, ChannelMetrics,
+    // http_request_counter, http_request_duration ( should now be part of ServiceMetrcs(?) ) 
 };
 pub use error::{ErrorResponse, ServiceError};
+pub use middleware::{RateLimitMiddleware, configure_rate_limits};
 
 #[cfg(test)]
 mod tests {

@@ -2,8 +2,8 @@
 // Prometheus metrics collection
 
 use prometheus::{
-    // Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
-    HistogramOpts, HistogramVec,
+    Counter, Histogram, HistogramOpts, HistogramVec,
+    // CounterVec, Gauge, GaugeVec, 
     IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry,
 };
 use std::time::Instant;
@@ -12,6 +12,8 @@ use std::time::Instant;
 #[derive(Clone)]
 pub struct ServiceMetrics {
     // HTTP metrics
+    pub http_request_counter: Counter,
+    pub http_request_duration: Histogram,
     pub http_requests_total: IntCounterVec,
     pub http_request_duration_seconds: HistogramVec,
     pub http_requests_in_progress: IntGaugeVec,
@@ -26,6 +28,23 @@ pub struct ServiceMetrics {
 
 impl ServiceMetrics {
     pub fn new(registry: &Registry, service_name: &str) -> Result<Self, prometheus::Error> {
+        // Create basic counter for backward compatibility
+        let http_request_counter = Counter::new(
+            format!("{}_http_requests", service_name),
+            "Total HTTP requests (simple counter)"
+        )?;
+        registry.register(Box::new(http_request_counter.clone()))?;
+        
+        // Create basic histogram for backward compatibility
+        let http_request_duration = Histogram::with_opts(
+            HistogramOpts::new(
+                format!("{}_http_request_duration", service_name),
+                "HTTP request duration (simple histogram)"
+            )
+            .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0])
+        )?;
+        registry.register(Box::new(http_request_duration.clone()))?;
+        
         let http_requests_total = IntCounterVec::new(
             Opts::new("http_requests_total", "Total number of HTTP requests")
                 .namespace(service_name),
@@ -77,6 +96,8 @@ impl ServiceMetrics {
         registry.register(Box::new(business_operation_duration_seconds.clone()))?;
         
         Ok(Self {
+            http_request_counter,
+            http_request_duration,
             http_requests_total,
             http_request_duration_seconds,
             http_requests_in_progress,

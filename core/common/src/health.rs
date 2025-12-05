@@ -22,13 +22,15 @@ impl HealthStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: HealthStatus,
+    pub service: String,
     pub version: String,
     pub uptime_seconds: u64,
+    pub features: Vec<String>,
     pub dependencies: Vec<DependencyHealth>,
 }
 
 impl HealthResponse {
-    pub fn new(version: String, start_time: SystemTime) -> Self {
+    pub fn new(service: String, version: String, start_time: SystemTime) -> Self {
         let uptime = SystemTime::now()
             .duration_since(start_time)
             .unwrap_or(Duration::from_secs(0))
@@ -36,10 +38,17 @@ impl HealthResponse {
         
         Self {
             status: HealthStatus::Healthy,
+            service,
             version,
             uptime_seconds: uptime,
+            features: Vec::new(),
             dependencies: Vec::new(),
         }
+    }
+    
+    pub fn with_features(mut self, features: Vec<String>) -> Self {
+        self.features = features;
+        self
     }
     
     pub fn add_dependency(&mut self, dependency: DependencyHealth) {
@@ -253,7 +262,7 @@ mod tests {
     #[test]
     fn test_health_response_creation() {
         let start_time = SystemTime::now();
-        let health = HealthResponse::new("1.0.0".to_string(), start_time);
+        let health = HealthResponse::new("common".to_string(), "1.0.0".to_string(), start_time);
         
         assert_eq!(health.status, HealthStatus::Healthy);
         assert_eq!(health.version, "1.0.0");
@@ -263,7 +272,7 @@ mod tests {
     #[test]
     fn test_health_response_with_healthy_dependency() {
         let start_time = SystemTime::now();
-        let mut health = HealthResponse::new("1.0.0".to_string(), start_time);
+        let mut health = HealthResponse::new("common".to_string(), "1.0.0".to_string(), start_time);
         
         let dep = DependencyHealth::new("database".to_string(), HealthStatus::Healthy)
             .with_latency(10);
@@ -277,7 +286,7 @@ mod tests {
     #[test]
     fn test_health_response_with_degraded_dependency() {
         let start_time = SystemTime::now();
-        let mut health = HealthResponse::new("1.0.0".to_string(), start_time);
+        let mut health = HealthResponse::new("common".to_string(), "1.0.0".to_string(), start_time);
         
         let dep = DependencyHealth::new("database".to_string(), HealthStatus::Degraded)
             .with_latency(1500);
@@ -290,7 +299,7 @@ mod tests {
     #[test]
     fn test_health_response_with_unhealthy_dependency() {
         let start_time = SystemTime::now();
-        let mut health = HealthResponse::new("1.0.0".to_string(), start_time);
+        let mut health = HealthResponse::new("common".to_string(), "1.0.0".to_string(), start_time);
         
         let dep = DependencyHealth::new("database".to_string(), HealthStatus::Unhealthy)
             .with_message("Connection refused".to_string());
@@ -303,7 +312,7 @@ mod tests {
     #[test]
     fn test_health_response_multiple_dependencies() {
         let start_time = SystemTime::now();
-        let mut health = HealthResponse::new("1.0.0".to_string(), start_time);
+        let mut health = HealthResponse::new("common".to_string(), "1.0.0".to_string(), start_time);
         
         health.add_dependency(
             DependencyHealth::new("database".to_string(), HealthStatus::Healthy)
@@ -320,7 +329,7 @@ mod tests {
     #[test]
     fn test_health_response_worst_status_wins() {
         let start_time = SystemTime::now();
-        let mut health = HealthResponse::new("1.0.0".to_string(), start_time);
+        let mut health = HealthResponse::new("common".to_string(), "1.0.0".to_string(), start_time);
         
         health.add_dependency(
             DependencyHealth::new("database".to_string(), HealthStatus::Healthy)
@@ -375,7 +384,7 @@ mod tests {
     #[test]
     fn test_health_response_serialization() {
         let start_time = SystemTime::now();
-        let mut health = HealthResponse::new("1.0.0".to_string(), start_time);
+        let mut health = HealthResponse::new("common".to_string(), "1.0.0".to_string(), start_time);
         
         health.add_dependency(
             DependencyHealth::new("database".to_string(), HealthStatus::Healthy)
