@@ -1,10 +1,15 @@
+// Check: Do src/middleware/auth.rs and src/middleware/metrics.rs duplicate common? 
+// If yes, delete them and use:
+// use bsv_bank_common::{RateLimitMiddleware}; // From common
+
 // core/deposit-service/src/middleware/auth.rs
 // Authentication middleware for deposit service
 
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
-    Error, HttpMessage,
+    Error, HttpMessage, // HttpResponse, 
 };
+// use actix_web::http::StatusCode;
 use bsv_bank_common::{auth::extract_bearer_token, JwtManager, ServiceError};
 use std::future::{ready, Ready};
 use std::rc::Rc;
@@ -103,18 +108,41 @@ where
                         Err(e) => Err(ServiceError::from(e).into()),
                     }
                 }
-                None => {
-                    // Check for API key
-                    let api_key = req.headers().get("X-API-Key").and_then(|h| h.to_str().ok());
+                // None => {
+                //     // Check for API key
+                //     let api_key = req.headers().get("X-API-Key").and_then(|h| h.to_str().ok());
 
-                    if api_key.is_some() {
-                        // TODO: Implement API key validation
-                        // For now, reject API key auth
-                        Err(ServiceError::Unauthorized.into())
-                    } else {
-                        Err(ServiceError::Unauthorized.into())
-                    }
+                //     if api_key.is_some() {
+                //         // TODO: Implement API key validation
+                //         // For now, reject API key auth
+                //         Err(ServiceError::Unauthorized.into())
+                //     } else {
+                //         Err(ServiceError::Unauthorized.into())
+                //     }
+                // }
+
+                None => {
+                    // Missing token → return 401
+                    Err(ServiceError::Unauthorized.into())
                 }
+
+                // // Chatgpt attempt (aborted for now)
+
+                // None => {
+                //     // Check for API key
+                //     let api_key = req.headers().get("X-API-Key").and_then(|h| h.to_str().ok());
+
+                //     if api_key.is_some() {
+                //         // TODO: Implement API key validation
+                //         // For now, reject API key auth
+                //         let resp = HttpResponse::Unauthorized().finish();
+                //         Ok(req.into_response(resp.map_into_right_body()))
+                //     } else {
+                //         // Missing Authorization header → return 401
+                //         let resp = HttpResponse::Unauthorized().finish();
+                //         Ok(req.into_response(resp.map_into_right_body()))
+                //     }
+                // }
             }
         })
     }
@@ -123,7 +151,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::{test, web, App, HttpResponse};
+    use actix_web::{test, web, App, HttpResponse}; // , error::ResponseError
+    use actix_web::http::StatusCode;
     use bsv_bank_common::JwtManager;
 
     async fn test_handler() -> HttpResponse {
@@ -175,8 +204,24 @@ mod tests {
         assert!(resp.status().is_success());
     }
 
+    // #[actix_web::test]
+    // async fn test_auth_middleware_rejects_missing_token() {
+    //     let jwt_manager = JwtManager::new("test-secret".to_string());
+    //     let app = test::init_service(
+    //         App::new()
+    //             .wrap(AuthMiddleware::new(jwt_manager))
+    //             .route("/protected", web::get().to(test_handler)),
+    //     )
+    //     .await;
+
+    //     let req = test::TestRequest::get().uri("/protected").to_request();
+    //     let resp = test::call_service(&app, req).await;
+    //     assert_eq!(resp.status(), 401);
+    // }
+
     #[actix_web::test]
     async fn test_auth_middleware_rejects_missing_token() {
+        
         let jwt_manager = JwtManager::new("test-secret".to_string());
         let app = test::init_service(
             App::new()
@@ -186,8 +231,12 @@ mod tests {
         .await;
 
         let req = test::TestRequest::get().uri("/protected").to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), 401);
+        let err = test::try_call_service(&app, req)
+            .await
+            .expect_err("Expected service to return error");
+        
+        let response = err.error_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[actix_web::test]

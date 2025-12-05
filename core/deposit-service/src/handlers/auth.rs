@@ -191,13 +191,13 @@ pub async fn refresh_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::web;
+    use actix_web::{test, web};
     use bsv_bank_common::JwtManager;
     use sqlx::postgres::PgPoolOptions;
 
     async fn setup_test_pool() -> PgPool {
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://localhost/bsv_bank_test".to_string());
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://a:@localhost:5432/bsv_bank_test".to_string());
 
         PgPoolOptions::new()
             .max_connections(1)
@@ -220,8 +220,11 @@ mod tests {
             password: "password123".to_string(),
         });
 
-        let request_id = web::Header("test-request-id".to_string());
-        let result = register(state, req, request_id).await;
+        let http_req = test::TestRequest::default()
+            .insert_header(("x-request-id", "test-request-id"))
+            .to_http_request();
+            
+        let result = register(state, req, http_req).await;
         assert!(result.is_err());
     }
 
@@ -239,8 +242,11 @@ mod tests {
             password: "short".to_string(),
         });
 
-        let request_id = web::Header("test-request-id".to_string());
-        let result = register(state, req, request_id).await;
+        let http_req = test::TestRequest::default()
+            .insert_header(("x-request-id", "test-request-id"))
+            .to_http_request();
+            
+        let result = register(state, req, http_req).await;
         assert!(result.is_err());
     }
 }

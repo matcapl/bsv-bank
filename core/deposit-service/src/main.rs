@@ -3,7 +3,12 @@
 
 mod database;
 mod node_integration;
-mod handlers;
+mod handlers {
+    pub mod health;     // ✅ KEEP - uses common's health but adds service-specific checks
+    pub mod auth;       // ✅ KEEP - uses common's auth but with local DB
+    pub mod metrics;    // ✅ KEEP - exposes Prometheus endpoint
+    // pub mod deposits;   // ✅ KEEP - deposit-specific business logic
+}
 mod middleware;
 
 use actix_web::{web, App, HttpResponse, HttpServer};
@@ -15,7 +20,8 @@ use uuid::Uuid;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use bsv_bank_common::{
-    init_logging, JwtManager, RateLimit, RateLimiter, ServiceMetrics,
+    init_logging, JwtManager, RateLimit, RateLimiter, 
+    RateLimitMiddleware, configure_rate_limits, ServiceMetrics,
     validate_paymail, validate_txid, validate_amount,
 };
 use dotenv::dotenv;
@@ -276,7 +282,8 @@ async fn main() -> std::io::Result<()> {
     
     // Phase 6: Prometheus metrics
     let registry = Registry::new();
-    let service_metrics = ServiceMetrics::new(&registry, "deposit_service")
+    // let service_metrics = ServiceMetrics::new(&registry, "deposit_service")
+    let _service_metrics = ServiceMetrics::new(&registry, "deposit_service")
         .expect("Failed to create service metrics");
     let _deposit_metrics = bsv_bank_common::DepositMetrics::new(&registry)
         .expect("Failed to create deposit metrics");
@@ -287,6 +294,7 @@ async fn main() -> std::io::Result<()> {
     rate_limiter.add_limit("deposits".to_string(), RateLimit::per_minute(100));
     rate_limiter.add_limit("withdrawals".to_string(), RateLimit::per_minute(50));
     rate_limiter.add_limit("auth".to_string(), RateLimit::per_minute(10));
+    configure_rate_limits(&mut rate_limiter);
     
     let rate_limiter = Arc::new(rate_limiter);
     bsv_bank_common::rate_limit::start_cleanup_task(rate_limiter.clone());
@@ -325,10 +333,14 @@ async fn main() -> std::io::Result<()> {
         
         App::new()
             .wrap(cors)
-            // Phase 6: Metrics middleware
-            .wrap(middleware::metrics::MetricsMiddleware::new(service_metrics.clone()))
+            // Phase 6: Common middleware from library
+            .wrap(RateLimitMiddleware::new(rate_limiter.clone()))
+            // // Phase 6: Metrics middleware
+            // .wrap(middleware::metrics::MetricsMiddleware::new(service_metrics.clone()))
             // Phase 6: Auth middleware
             .wrap(middleware::auth::AuthMiddleware::new(jwt_manager.clone()))
+            // Add metrics middleware if you have it
+            // .wrap(bsv_bank_common::MetricsMiddleware::new(service_metrics.clone()))
             // Phase 6: Security headers
             .wrap(actix_web::middleware::DefaultHeaders::new()
                 .add(("X-Frame-Options", "DENY"))

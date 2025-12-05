@@ -16,6 +16,7 @@ pub struct AppState {
 /// Health check endpoint - comprehensive service health
 pub async fn health_check(data: web::Data<AppState>) -> Result<HttpResponse> {
     let mut health = HealthResponse::new(
+        "deposit-service".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
         data.start_time,
     );
@@ -59,8 +60,8 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     async fn setup_test_pool() -> PgPool {
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://localhost/bsv_bank_test".to_string());
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://a:@localhost:5432/bsv_bank_test".to_string());
         
         PgPoolOptions::new()
             .max_connections(1)

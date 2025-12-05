@@ -13,9 +13,9 @@ impl BsvNodeClient {
         Self
     }
 
-    pub async fn verify_transaction(&self, _txid: &str) -> Result<bool, String> {
-        Ok(true)
-    }
+    // pub async fn verify_transaction(&self, _txid: &str) -> Result<bool, String> {
+    //     Ok(true)
+    // }
 
     pub async fn verify_spv(&self, _txid: &str, _confirmations: u32) -> Result<bool, String> {
         Ok(true)

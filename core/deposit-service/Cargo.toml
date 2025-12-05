@@ -51,7 +51,7 @@ thiserror = "1.0"
 jsonwebtoken = "9"
 
 # Troubleshoot for handlers/metrics, middleware/auth, middleware/metrics
-futures-util = "0.3"
+futures-util = "0.3.31"
 
 [dev-dependencies]
 tokio-test = "0.4"
