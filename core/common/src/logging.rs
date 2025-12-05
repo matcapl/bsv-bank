@@ -1,14 +1,14 @@
 // core/common/src/logging.rs
 // Structured JSON logging with correlation IDs
 
-use tracing::{info, warn, error, debug, Level};
+use tracing::{info, warn, error, debug};
 use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
     util::SubscriberInitExt,
     EnvFilter,
 };
-use std::sync::Arc;
+// use std::sync::Arc;
 use uuid::Uuid;
 
 /// Initialize structured logging for a service

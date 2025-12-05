@@ -2,7 +2,8 @@
 // Prometheus metrics collection
 
 use prometheus::{
-    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
+    // Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
+    HistogramOpts, HistogramVec,
     IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry,
 };
 use std::time::Instant;
